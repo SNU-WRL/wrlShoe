@@ -1,0 +1,95 @@
+#ifndef MOTORIZED_SHOE_SEND_CAN_COMMAND_TO_ELMO_NODE_HPP
+#define MOTORIZED_SHOE_SEND_CAN_COMMAND_TO_ELMO_NODE_HPP
+
+#include <atomic>
+#include <memory>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+
+#include "motorized_shoe/can_utils.hpp"
+#include "motorized_shoe/canopen_utils.hpp"
+#include "motorized_shoe/config.hpp"
+#include "motorized_shoe/data_bus.hpp"
+
+namespace motorized_shoe {
+
+class SendCanCommandToElmoNode {
+public:
+    SendCanCommandToElmoNode(const Config& cfg, DataBus& bus);
+    ~SendCanCommandToElmoNode();
+
+    SendCanCommandToElmoNode(const SendCanCommandToElmoNode&) = delete;
+    SendCanCommandToElmoNode& operator=(const SendCanCommandToElmoNode&) = delete;
+
+    void tick();
+
+    // External velocity injection. While external control is active for a
+    // foot, normal gait-mapped velocity commands are suppressed. inject_velocity
+    // immediately sends the given velocity and marks the foot as externally
+    // controlled. release_external_control restores normal gait-mapped behavior
+    // and immediately sends the current gait phase's mapped velocity.
+    void inject_velocity(const std::string& foot, int32_t velocity);
+    void release_external_control(const std::string& foot);
+    bool is_externally_controlled(const std::string& foot) const;
+
+    // Emergency stop: when requested, the next tick() will inject velocity 0
+    // on both feet and hold them under external control until released. The
+    // atomic is safe to set from any thread (e.g. the keyboard handler); the
+    // actual CAN writes still happen on the main loop thread.
+    void request_emergency_stop(bool stopped);
+    bool is_emergency_stopped() const;
+
+    // Slip-experiment mode: suppress all gait-phase velocity commands so the
+    // motors stay at 0 unless explicitly driven by inject_velocity (i.e. the
+    // slip burst). When enabled, each foot is parked at 0 once its drive
+    // finishes initializing, and again after any re-enable.
+    void set_suppress_gait_velocity_commands(bool suppress);
+
+    // Override profile acceleration/deceleration for slip-mode bursts. The
+    // value is written along with the park-at-0 step so that subsequent
+    // inject_velocity calls hit the drive with the fast ramp already in
+    // place. 0 = leave whatever init set.
+    void set_slip_profile_acceleration(int32_t accel);
+
+private:
+    void initialize_elmo_driver(int node_id);
+    void send_velocity_command(int node_id, int32_t velocity);
+    void stop_and_reset_elmo(int node_id, const std::string& foot);
+    void process_foot(const GaitPhase& gait, int node_id, const std::string& foot, uint32_t& last_detection_count);
+    void disable_drive(int node_id, const std::string& foot);
+    void reenable_drive(int node_id, const std::string& foot);
+
+    DataBus& bus_;
+    std::unique_ptr<CANSocket> can_socket_;
+
+    int left_node_id_;
+    int right_node_id_;
+    std::unordered_map<std::string, int32_t> velocity_map_;
+    std::unordered_set<std::string> active_fault_foot_names_;
+    uint32_t last_left_detection_count_ = 0;
+    uint32_t last_right_detection_count_ = 0;
+
+    std::atomic<bool> left_ready_{false};
+    std::atomic<bool> right_ready_{false};
+    std::atomic<bool> shutting_down_{false};
+    std::thread init_thread_;
+
+    bool left_external_active_ = false;
+    bool right_external_active_ = false;
+
+    std::atomic<bool> emergency_stop_requested_{false};
+    bool emergency_stop_applied_ = false;
+    bool left_disabled_ = false;
+    bool right_disabled_ = false;
+
+    std::atomic<bool> suppress_gait_velocity_commands_{false};
+    bool left_initial_park_done_ = false;
+    bool right_initial_park_done_ = false;
+    std::atomic<int32_t> slip_profile_acceleration_{0};
+};
+
+}  // namespace motorized_shoe
+
+#endif  // MOTORIZED_SHOE_SEND_CAN_COMMAND_TO_ELMO_NODE_HPP

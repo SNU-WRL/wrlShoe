@@ -1,0 +1,96 @@
+# CAN Bus Configuration
+can_imu_interface: "can1"
+can_elmo_interface: "can0"
+
+# IMU CAN IDs (Left/Right shoes)
+imu_left_can_ids:
+  rotation_vector: 0x110
+  accelerometer: 0x111
+  gyroscope: 0x112
+  magnetometer: 0x113
+
+imu_right_can_ids:
+  rotation_vector: 0x120
+  accelerometer: 0x121
+  gyroscope: 0x122
+  magnetometer: 0x123
+
+# ELMO CANopen Node IDs (configurable per shoe)
+elmo_node_ids:
+  left: 126
+  right: 127
+
+# Control loop frequency (Hz)
+loop_frequency: 1000
+
+# Gait Detection Configuration
+gait_detection:
+  sampling_frequency: 120.0
+  use_both_feet: false
+
+  # Velocity commands for each gait phase (counts/sec)
+  # Node expects keys: MSt, HO, TSt, TO, Swing, HS
+  velocity_map:
+    MSt: 150000
+    HO: 150000
+    TSt: 150000
+    TO: 150000
+    Swing: 150000
+    HS: 150000
+
+  # Thresholds for gait event detection (gyro thresholds are in rad/s)
+  thresholds:
+    hs_threshold: -1.3963
+    ts_threshold: -0.5236
+    ho_threshold: -0.5236
+    to_threshold: -3.4907
+    swing_threshold: 25.0
+    midstance_threshold: 12.0
+    # Heel-strike gating: require an impact-magnitude accel spike during swing
+    # AND a minimum swing dwell before allowing Swing -> HS. Without these the
+    # FSM declares HS as soon as accel_norm dips below midstance_threshold
+    # during mid-swing, which fires slip commands ~120 ms before actual landing.
+    impact_threshold: 20.0
+    min_swing_dwell_ms: 220
+
+# ELMO CANopen Configuration
+elmo_config:
+  mode_of_operation: 0x6060
+  target_velocity: 0x60FF
+  status_word: 0x6041
+  control_word: 0x6040
+  error_code: 0x603F
+  nmt_operational: 0x01
+  sdo_rx_offset: 0x580
+  sdo_tx_offset: 0x600
+  sdo_timeout: 300
+  can_write_timeout: 100
+  profile_acceleration: 10000000
+  profile_deceleration: 10000000
+
+# Slip Perturbation (used by motorized_shoe_slip_app)
+# Two modes selectable from keyboard, both one-shot per keypress:
+#   mode1_key: arm slip that fires `mode1_delay_after_hs_ms` after the next HS
+#   mode2_key: arm slip that fires `mode2_delay_after_ho_ms` after the next HO
+#                (HO precedes TO by ~50-150 ms, so this is the "slightly before TO" slip)
+slip_perturbation:
+  enabled: true
+  foot: "Right"
+  slip_velocity: 200000
+  slip_duration_ms: 500
+  mode1_delay_after_hs_ms: 150
+  mode2_delay_after_ho_ms: 0
+  # Drive profile acceleration/deceleration in slip mode (counts/sec^2).
+  # Init default is 1e6 → ~150 ms ramp for a 150k slip, so most of a short
+  # burst is spent ramping. 1e7 (~15 ms ramp) makes the slip onset
+  # essentially instantaneous relative to the gait event.
+  slip_profile_acceleration: 10000000
+  mode1_key: "1"
+  mode2_key: "2"
+
+# Logging Configuration
+logging:
+  imu_data_log: false
+  gait_phase_log: true
+  elmo_command_log: true
+  elmo_status_log: true

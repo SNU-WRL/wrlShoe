@@ -1,0 +1,19 @@
+# Build output
+build/
+*.o
+*.obj
+*.a
+*.so
+
+# Data / run logs
+*.csv
+log/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local Claude Code settings
+.claude/settings.local.json
