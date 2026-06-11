@@ -16,9 +16,11 @@ namespace motorized_shoe {
 // one-shot slip velocity bursts timed relative to gait events.
 //
 //   Mode AfterHS  -> fires `mode1_delay_after_hs_ms` after the next HS event.
-//   Mode BeforeTO -> fires `mode2_delay_after_ho_ms` after the next HO event
-//                    (HO precedes TO physically by ~50-150 ms, used as the
-//                    "slightly before toe-off" trigger).
+//   Mode BeforeTO -> fires `mode2_delay_after_mst_ms` after the next MSt entry.
+//                    MSt entry leads TO by ~200-450 ms; tune the delay to land
+//                    just before toe-off. Triggering off MSt (an accel-quiet
+//                    event) is more reliable than HO (a steep gyro threshold
+//                    crossing that is easy to miss-time by tens of ms).
 //
 // Single-threaded: tick() runs in the main control loop. request_slip() is
 // safe to call from another thread (keyboard handler).

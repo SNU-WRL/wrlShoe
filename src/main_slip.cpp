@@ -114,9 +114,9 @@ int main(int argc, char* argv[]) {
                   << " velocity=" << cfg.slip.slip_velocity
                   << " duration=" << cfg.slip.slip_duration_ms << "ms"
                   << " hs_delay=" << cfg.slip.mode1_delay_after_hs_ms << "ms"
-                  << " ho_delay=" << cfg.slip.mode2_delay_after_ho_ms << "ms\n";
+                  << " mst_delay=" << cfg.slip.mode2_delay_after_mst_ms << "ms\n";
         std::cout << "Keys: '" << cfg.slip.mode1_key << "' = slip after HS, '"
-                  << cfg.slip.mode2_key << "' = slip on HO (before TO),"
+                  << cfg.slip.mode2_key << "' = slip after MSt (before TO),"
                   << " 's' = stop motors, 'r' = resume, 'q' = quit\n";
         std::cout.flush();
 

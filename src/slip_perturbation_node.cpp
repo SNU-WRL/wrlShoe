@@ -81,7 +81,7 @@ void SlipPerturbationNode::tick() {
     if (state_ == State::ArmedAfterHS) {
         scan_for_trigger_event("HS", cfg_.mode1_delay_after_hs_ms);
     } else if (state_ == State::ArmedBeforeTO) {
-        scan_for_trigger_event("HO", cfg_.mode2_delay_after_ho_ms);
+        scan_for_trigger_event("MSt", cfg_.mode2_delay_after_mst_ms);
     }
 
     // Deadline check. Fall through across states so a delay_ms of 0 (or a
@@ -129,9 +129,12 @@ void SlipPerturbationNode::scan_for_trigger_event(
 }
 
 void SlipPerturbationNode::start_slip_now() {
-    // BeforeTO (HO-triggered) slips push the foot in the opposite direction
+    // BeforeTO (MSt-triggered) slips push the foot in the opposite direction
     // of an HS-triggered slip — the perturbation simulates a foot slipping
     // forward at push-off, the inverse of the heel-strike slip backward.
+    // We trigger off MSt entry + a tunable delay rather than HO because HO
+    // detection is jittery on the threshold crossing while MSt entry is a
+    // stable accel-quiet event ~200-450 ms before TO.
     const int32_t velocity = (current_mode_ == Mode::BeforeTO)
                                  ? -cfg_.slip_velocity
                                  : cfg_.slip_velocity;

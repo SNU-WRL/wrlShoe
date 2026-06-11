@@ -54,7 +54,12 @@ public:
     void set_slip_profile_acceleration(int32_t accel);
 
 private:
-    void initialize_elmo_driver(int node_id);
+    // configure_pdos: map the feedback TPDOs (only needed on first bring-up;
+    // the mapping persists across fault-reset and NMT state changes, so the
+    // fault-recovery / re-enable paths pass false to avoid re-doing the slow
+    // ~260 ms PDO config and lengthening the control-loop stall).
+    void initialize_elmo_driver(int node_id, bool configure_pdos = true);
+    void configure_pdo_mapping(int node_id);
     void send_velocity_command(int node_id, int32_t velocity);
     void stop_and_reset_elmo(int node_id, const std::string& foot);
     void process_foot(const GaitPhase& gait, int node_id, const std::string& foot, uint32_t& last_detection_count);

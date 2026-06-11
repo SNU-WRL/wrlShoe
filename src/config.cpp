@@ -217,7 +217,7 @@ Config load_config(const std::string& path) {
     }
     apply_int(kv, "slip_perturbation.slip_duration_ms", cfg.slip.slip_duration_ms);
     apply_int(kv, "slip_perturbation.mode1_delay_after_hs_ms", cfg.slip.mode1_delay_after_hs_ms);
-    apply_int(kv, "slip_perturbation.mode2_delay_after_ho_ms", cfg.slip.mode2_delay_after_ho_ms);
+    apply_int(kv, "slip_perturbation.mode2_delay_after_mst_ms", cfg.slip.mode2_delay_after_mst_ms);
     {
         int v = cfg.slip.slip_profile_acceleration;
         apply_int(kv, "slip_perturbation.slip_profile_acceleration", v);

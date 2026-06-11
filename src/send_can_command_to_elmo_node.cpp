@@ -345,7 +345,7 @@ void SendCanCommandToElmoNode::disable_drive(int node_id, const std::string& foo
 
 void SendCanCommandToElmoNode::reenable_drive(int node_id, const std::string& foot) {
     try {
-        initialize_elmo_driver(node_id);
+        initialize_elmo_driver(node_id, /*configure_pdos=*/false);
     } catch (const std::exception& e) {
         std::cerr << "[send_can_command_to_elmo] " << foot
                   << " re-enable failed: " << e.what() << '\n';
@@ -388,8 +388,20 @@ void SendCanCommandToElmoNode::set_slip_profile_acceleration(int32_t accel) {
     slip_profile_acceleration_.store(accel, std::memory_order_release);
 }
 
-void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id) {
+void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configure_pdos) {
     using namespace std::chrono_literals;
+
+    // PDO mapping must be edited while the node is NMT Pre-Operational. Force
+    // pre-op first (a node coming out of power-up is already there, but a prior
+    // run may have left it Operational), configure the TPDOs, then NMT Start so
+    // the SYNC-triggered TPDOs begin transmitting.
+    if (configure_pdos) {
+        auto preop = create_nmt_message(node_id, CANOPEN_NMT_PREOP);
+        can_socket_->send_message(preop.can_id, preop.data, preop.dlc);
+        std::this_thread::sleep_for(50ms);
+
+        configure_pdo_mapping(node_id);
+    }
 
     auto nmt = create_nmt_message(node_id, CANOPEN_NMT_START);
     can_socket_->send_message(nmt.can_id, nmt.data, nmt.dlc);
@@ -433,6 +445,51 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id) {
     std::this_thread::sleep_for(50ms);
 }
 
+void SendCanCommandToElmoNode::configure_pdo_mapping(int node_id) {
+    using namespace std::chrono_literals;
+
+    // Configure two SYNC-triggered TPDOs per drive so motor feedback streams at
+    // the SYNC rate (1 kHz) without per-value SDO request frames:
+    //   TPDO1 (0x180+id): position 0x6064 (32b) + velocity 0x606C (32b) = 8 B
+    //   TPDO2 (0x280+id): current  0x6078 (16b)                          = 2 B
+    // Statusword stays on the existing 2 Hz SDO poll for fault detection.
+    //
+    // Standard remap procedure per PDO: disable the PDO (COB-ID bit 31), set the
+    // transmission type, clear the mapping count, write the mapping entries, set
+    // the count, then re-enable the COB-ID. Writes are blind (fire-and-forget
+    // with a short gap), matching the rest of init — the SDO responses are not
+    // verified here. The inter-write gap keeps the drive's SDO server from
+    // collapsing back-to-back transfers.
+    const uint32_t id = static_cast<uint32_t>(node_id);
+    auto write_sdo = [&](uint16_t index, uint8_t sub, uint32_t value, int length) {
+        auto msg = create_sdo_download(node_id, index, sub, value, length);
+        can_socket_->send_message(msg.can_id, msg.data, msg.dlc);
+        std::this_thread::sleep_for(20ms);
+    };
+
+    // Mapping entry encoding: (index << 16) | (subindex << 8) | bit_length.
+    const uint32_t map_position = (static_cast<uint32_t>(CANOPEN_POSITION_ACTUAL) << 16) | 0x20;
+    const uint32_t map_velocity = (static_cast<uint32_t>(CANOPEN_VELOCITY_ACTUAL) << 16) | 0x20;
+    const uint32_t map_current = (static_cast<uint32_t>(CANOPEN_CURRENT_ACTUAL) << 16) | 0x10;
+
+    const uint32_t cob1 = CANOPEN_TPDO1_COB_BASE + id;
+    write_sdo(CANOPEN_TPDO1_COMM, 1, cob1 | 0x80000000u, 4);  // disable
+    write_sdo(CANOPEN_TPDO1_COMM, 2, 1, 1);                   // transmit on every SYNC
+    write_sdo(CANOPEN_TPDO1_MAP, 0, 0, 1);                    // clear mapping
+    write_sdo(CANOPEN_TPDO1_MAP, 1, map_position, 4);
+    write_sdo(CANOPEN_TPDO1_MAP, 2, map_velocity, 4);
+    write_sdo(CANOPEN_TPDO1_MAP, 0, 2, 1);                    // two entries
+    write_sdo(CANOPEN_TPDO1_COMM, 1, cob1, 4);               // re-enable
+
+    const uint32_t cob2 = CANOPEN_TPDO2_COB_BASE + id;
+    write_sdo(CANOPEN_TPDO2_COMM, 1, cob2 | 0x80000000u, 4);  // disable
+    write_sdo(CANOPEN_TPDO2_COMM, 2, 1, 1);                   // transmit on every SYNC
+    write_sdo(CANOPEN_TPDO2_MAP, 0, 0, 1);                    // clear mapping
+    write_sdo(CANOPEN_TPDO2_MAP, 1, map_current, 4);
+    write_sdo(CANOPEN_TPDO2_MAP, 0, 1, 1);                    // one entry
+    write_sdo(CANOPEN_TPDO2_COMM, 1, cob2, 4);               // re-enable
+}
+
 void SendCanCommandToElmoNode::send_velocity_command(int node_id, int32_t velocity) {
     auto vel = create_sdo_download(node_id, CANOPEN_TARGET_VELOCITY, 0, static_cast<uint32_t>(velocity), 4);
     can_socket_->send_message(vel.can_id, vel.data, vel.dlc);
@@ -456,7 +513,7 @@ void SendCanCommandToElmoNode::stop_and_reset_elmo(int node_id, const std::strin
     std::cerr << "[send_can_command_to_elmo] re-arming " << foot
               << " drive (node " << node_id << ")\n";
     try {
-        initialize_elmo_driver(node_id);
+        initialize_elmo_driver(node_id, /*configure_pdos=*/false);
         std::cerr << "[send_can_command_to_elmo] " << foot
                   << " drive re-armed\n";
     } catch (const std::exception& e) {

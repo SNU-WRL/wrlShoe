@@ -42,7 +42,7 @@ gait_detection:
   thresholds:
     hs_threshold: -1.3963
     ts_threshold: -0.5236
-    ho_threshold: -0.5236
+    ho_threshold: -0.15
     to_threshold: -3.4907
     swing_threshold: 25.0
     midstance_threshold: 12.0
@@ -71,15 +71,17 @@ elmo_config:
 # Slip Perturbation (used by motorized_shoe_slip_app)
 # Two modes selectable from keyboard, both one-shot per keypress:
 #   mode1_key: arm slip that fires `mode1_delay_after_hs_ms` after the next HS
-#   mode2_key: arm slip that fires `mode2_delay_after_ho_ms` after the next HO
-#                (HO precedes TO by ~50-150 ms, so this is the "slightly before TO" slip)
+#   mode2_key: arm slip that fires `mode2_delay_after_mst_ms` after the next MSt
+#                entry. MSt -> TO is roughly 200-450 ms, so tune the delay to
+#                land the slip just before toe-off. MSt entry is more stable
+#                than HO threshold crossing, which is jittery by tens of ms.
 slip_perturbation:
   enabled: true
   foot: "Right"
-  slip_velocity: 200000
+  slip_velocity: 150000
   slip_duration_ms: 500
   mode1_delay_after_hs_ms: 150
-  mode2_delay_after_ho_ms: 0
+  mode2_delay_after_mst_ms: 200
   # Drive profile acceleration/deceleration in slip mode (counts/sec^2).
   # Init default is 1e6 → ~150 ms ramp for a 150k slip, so most of a short
   # burst is spent ramping. 1e7 (~15 ms ramp) makes the slip onset

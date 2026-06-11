@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-CAN0_BITRATE="${CAN0_BITRATE:-500000}"
+CAN0_BITRATE="${CAN0_BITRATE:-1000000}"
 CAN1_BITRATE="${CAN1_BITRATE:-1000000}"
 
 if [[ $# -gt 0 ]]; then

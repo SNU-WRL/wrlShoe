@@ -10,6 +10,9 @@ ReadCanMalfunctionFromElmoNode::ReadCanMalfunctionFromElmoNode(const Config& cfg
       last_status_request_(std::chrono::steady_clock::now()) {
     elmo_nodes_.push_back({cfg.elmo_node_left, "Left"});
     elmo_nodes_.push_back({cfg.elmo_node_right, "Right"});
+
+    motor_left_.foot = "Left";
+    motor_right_.foot = "Right";
 }
 
 void ReadCanMalfunctionFromElmoNode::tick() {
@@ -19,7 +22,11 @@ void ReadCanMalfunctionFromElmoNode::tick() {
 
     try {
         while (can_socket_->recv_message(can_id, data, len, 0)) {
-            if (can_id >= 0x580 && can_id <= 0x5FF) {
+            if (can_id >= 0x180 && can_id <= 0x1FF) {
+                process_tpdo1(can_id - CANOPEN_TPDO1_COB_BASE, data, len);
+            } else if (can_id >= 0x280 && can_id <= 0x2FF) {
+                process_tpdo2(can_id - CANOPEN_TPDO2_COB_BASE, data, len);
+            } else if (can_id >= 0x580 && can_id <= 0x5FF) {
                 process_sdo_response(can_id - 0x580, data, len);
             }
         }
@@ -39,15 +46,24 @@ void ReadCanMalfunctionFromElmoNode::tick() {
         }
         last_status_request_ = now;
     }
+
+    // Trigger the next round of feedback TPDOs. The drives transmit on receipt;
+    // those frames are drained at the top of the next tick.
+    send_sync();
+}
+
+void ReadCanMalfunctionFromElmoNode::send_sync() {
+    try {
+        auto sync = create_sync_message();
+        can_socket_->send_message(sync.can_id, sync.data, sync.dlc);
+    } catch (const std::exception& e) {
+        std::cerr << "[read_can_malfunction_from_elmo] SYNC send failed: " << e.what() << '\n';
+    }
 }
 
 void ReadCanMalfunctionFromElmoNode::request_status_word(int node_id) {
-    uint8_t msg_data[8] = {0};
-    msg_data[0] = 0x40;
-    msg_data[1] = 0x41;
-    msg_data[2] = 0x60;
-    msg_data[3] = 0x00;
-    can_socket_->send_message(0x600 + static_cast<uint32_t>(node_id), msg_data, 4);
+    auto req = create_sdo_upload(static_cast<uint32_t>(node_id), CANOPEN_STATUS_WORD, 0);
+    can_socket_->send_message(req.can_id, req.data, req.dlc);
 }
 
 void ReadCanMalfunctionFromElmoNode::process_sdo_response(uint32_t node_id, const uint8_t* data, size_t len) {
@@ -98,6 +114,61 @@ void ReadCanMalfunctionFromElmoNode::publish_status(uint32_t node_id, uint16_t s
     status.valid = true;
 
     bus_.update_status(status);
+}
+
+ElmoMotorInfo* ReadCanMalfunctionFromElmoNode::motor_info_for(uint32_t node_id) {
+    for (const auto& node : elmo_nodes_) {
+        if (static_cast<uint32_t>(node.node_id) == node_id) {
+            return (node.foot == "Left") ? &motor_left_ : &motor_right_;
+        }
+    }
+    return nullptr;
+}
+
+void ReadCanMalfunctionFromElmoNode::process_tpdo1(
+    uint32_t node_id, const uint8_t* data, size_t len) {
+    // TPDO1 payload: position (INT32) + velocity (INT32), little-endian.
+    if (len < 8) {
+        return;
+    }
+    ElmoMotorInfo* motor = motor_info_for(node_id);
+    if (motor == nullptr) {
+        return;
+    }
+
+    motor->position = static_cast<int32_t>(
+        static_cast<uint32_t>(data[0]) |
+        (static_cast<uint32_t>(data[1]) << 8) |
+        (static_cast<uint32_t>(data[2]) << 16) |
+        (static_cast<uint32_t>(data[3]) << 24));
+    motor->velocity = static_cast<int32_t>(
+        static_cast<uint32_t>(data[4]) |
+        (static_cast<uint32_t>(data[5]) << 8) |
+        (static_cast<uint32_t>(data[6]) << 16) |
+        (static_cast<uint32_t>(data[7]) << 24));
+    motor->position_valid = true;
+    motor->velocity_valid = true;
+    motor->timestamp_ns = now_ns();
+    motor->valid = true;
+    bus_.update_motor_info(*motor);
+}
+
+void ReadCanMalfunctionFromElmoNode::process_tpdo2(
+    uint32_t node_id, const uint8_t* data, size_t len) {
+    // TPDO2 payload: current (INT16), little-endian.
+    if (len < 2) {
+        return;
+    }
+    ElmoMotorInfo* motor = motor_info_for(node_id);
+    if (motor == nullptr) {
+        return;
+    }
+
+    motor->current = static_cast<int16_t>(data[0] | (data[1] << 8));
+    motor->current_valid = true;
+    motor->timestamp_ns = now_ns();
+    motor->valid = true;
+    bus_.update_motor_info(*motor);
 }
 
 void ReadCanMalfunctionFromElmoNode::publish_error(uint32_t node_id, uint32_t abort_code) {

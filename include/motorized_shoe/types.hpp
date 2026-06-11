@@ -70,6 +70,26 @@ struct ElmoStatus {
     bool valid = false;
 };
 
+// Live motor feedback read back from an ELMO drive (CiA-402 objects):
+//   position  = 0x6064 Position actual value   (counts, INT32)
+//   velocity  = 0x606C Velocity actual value   (counts/sec, INT32)
+//   current   = 0x6078 Current actual value    (per-mille of rated current, INT16)
+// Each field carries its own valid flag because the values arrive as separate
+// SDO upload responses; a field stays invalid until its first response lands.
+struct ElmoMotorInfo {
+    int64_t timestamp_ns = 0;
+    std::string foot;
+
+    int32_t position = 0;
+    int32_t velocity = 0;
+    int16_t current = 0;
+
+    bool position_valid = false;
+    bool velocity_valid = false;
+    bool current_valid = false;
+    bool valid = false;
+};
+
 struct SystemSnapshot {
     int64_t timestamp_ns = 0;
     IMUData imu_left;
@@ -80,6 +100,8 @@ struct SystemSnapshot {
     ElmoCommand cmd_right;
     ElmoStatus status_left;
     ElmoStatus status_right;
+    ElmoMotorInfo motor_left;
+    ElmoMotorInfo motor_right;
 
     uint32_t imu_node_latency_us = 0;
     uint32_t status_node_latency_us = 0;

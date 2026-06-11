@@ -76,6 +76,15 @@ public:
         }
     }
 
+    void update_motor_info(const ElmoMotorInfo& motor) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (motor.foot == "Left") {
+            state_.motor_left = motor;
+        } else {
+            state_.motor_right = motor;
+        }
+    }
+
     SystemSnapshot snapshot() const {
         std::lock_guard<std::mutex> lock(mutex_);
         SystemSnapshot copy = state_;

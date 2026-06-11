@@ -20,7 +20,8 @@ struct SlipConfig {
     int32_t slip_velocity = 100000;       // counts/sec sent to ELMO during slip
     int slip_duration_ms = 150;           // how long the slip lasts
     int mode1_delay_after_hs_ms = 100;    // mode 1: slip starts this long after HS
-    int mode2_delay_after_ho_ms = 0;      // mode 2: slip starts this long after HO (HO precedes TO)
+    int mode2_delay_after_mst_ms = 200;   // mode 2: slip starts this long after MSt entry
+                                          // (MSt -> TO is ~200-450 ms; tune to land just before TO)
     // Profile acceleration / deceleration (counts/sec^2) written to the drive
     // when slip mode is active. The init sequence sets 1e6 by default, which
     // gives a ~150 ms ramp for a 150k slip — most of a short slip burst would
