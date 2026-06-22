@@ -107,6 +107,7 @@ int main(int argc, char* argv[]) {
         const int loop_hz = (cfg.loop_frequency_hz > 0) ? cfg.loop_frequency_hz : 1000;
         const auto period = std::chrono::microseconds(1000000 / loop_hz);
         uint64_t tick_count = 0;
+        uint32_t prev_log_us = 0;  // previous tick's logging cost (see log_latency_us)
 
         std::cout << "Starting slip-perturbation loop at " << loop_hz
                   << " Hz. Logging every 10 ms to " << log_path << '\n';
@@ -124,18 +125,56 @@ int main(int argc, char* argv[]) {
         while (g_run.load()) {
             next_tick += period;
 
-            imu_node.tick();
-            status_node.tick();
-            gait_node.tick();
-            slip_node.tick();
-            cmd_node.tick();
+            // Time each node so the latency columns are populated (mirrors
+            // main.cpp). slip_node runs between gait and cmd; its cost is not a
+            // logged field, so it is captured only inside loop_latency_us.
+            const auto tick_start = std::chrono::steady_clock::now();
 
+            imu_node.tick();
+            const auto imu_end = std::chrono::steady_clock::now();
+
+            status_node.tick();
+            const auto status_end = std::chrono::steady_clock::now();
+
+            gait_node.tick();
+            const auto gait_end = std::chrono::steady_clock::now();
+
+            slip_node.tick();
+
+            const auto cmd_start = std::chrono::steady_clock::now();
+            cmd_node.tick();
+            const auto cmd_end = std::chrono::steady_clock::now();
+
+            const uint32_t imu_us = static_cast<uint32_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(imu_end - tick_start).count());
+            const uint32_t status_us = static_cast<uint32_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(status_end - imu_end).count());
+            const uint32_t gait_us = static_cast<uint32_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(gait_end - status_end).count());
+            const uint32_t cmd_us = static_cast<uint32_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(cmd_end - cmd_start).count());
+            const uint32_t loop_us = static_cast<uint32_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(cmd_end - tick_start).count());
+
+            // Time the logging path (snapshot copy + queue + every-10th-tick
+            // flush) separately from loop_latency_us. The cost is carried into
+            // the next snapshot, so log_latency_us is one tick delayed.
+            const auto log_start = std::chrono::steady_clock::now();
             auto snapshot = bus.snapshot();
+            snapshot.imu_node_latency_us = imu_us;
+            snapshot.status_node_latency_us = status_us;
+            snapshot.gait_node_latency_us = gait_us;
+            snapshot.command_node_latency_us = cmd_us;
+            snapshot.loop_latency_us = loop_us;
+            snapshot.log_latency_us = prev_log_us;
             logger.queue_snapshot(snapshot);
 
             if ((tick_count % 10) == 0) {
                 logger.flush();
             }
+            prev_log_us = static_cast<uint32_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - log_start).count());
             ++tick_count;
 
             std::this_thread::sleep_until(next_tick);

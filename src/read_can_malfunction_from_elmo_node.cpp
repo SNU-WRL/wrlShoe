@@ -155,7 +155,10 @@ void ReadCanMalfunctionFromElmoNode::process_tpdo1(
 
 void ReadCanMalfunctionFromElmoNode::process_tpdo2(
     uint32_t node_id, const uint8_t* data, size_t len) {
-    // TPDO2 payload: current (INT16), little-endian.
+    // TPDO2 payload: current (INT16) + velocity demand (INT32) + current demand
+    // (INT16), little-endian. Bytes: [0:2] current, [2:6] vel demand, [6:8]
+    // current demand. Current is parsed if at least 2 bytes arrive; the demand
+    // fields require the full 8-byte frame.
     if (len < 2) {
         return;
     }
@@ -166,6 +169,16 @@ void ReadCanMalfunctionFromElmoNode::process_tpdo2(
 
     motor->current = static_cast<int16_t>(data[0] | (data[1] << 8));
     motor->current_valid = true;
+    if (len >= 8) {
+        motor->velocity_demand = static_cast<int32_t>(
+            static_cast<uint32_t>(data[2]) |
+            (static_cast<uint32_t>(data[3]) << 8) |
+            (static_cast<uint32_t>(data[4]) << 16) |
+            (static_cast<uint32_t>(data[5]) << 24));
+        motor->current_demand = static_cast<int16_t>(data[6] | (data[7] << 8));
+        motor->velocity_demand_valid = true;
+        motor->current_demand_valid = true;
+    }
     motor->timestamp_ns = now_ns();
     motor->valid = true;
     bus_.update_motor_info(*motor);

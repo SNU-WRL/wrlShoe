@@ -451,7 +451,10 @@ void SendCanCommandToElmoNode::configure_pdo_mapping(int node_id) {
     // Configure two SYNC-triggered TPDOs per drive so motor feedback streams at
     // the SYNC rate (1 kHz) without per-value SDO request frames:
     //   TPDO1 (0x180+id): position 0x6064 (32b) + velocity 0x606C (32b) = 8 B
-    //   TPDO2 (0x280+id): current  0x6078 (16b)                          = 2 B
+    //   TPDO2 (0x280+id): current 0x6078 (16b) + velocity demand 0x606B (32b)
+    //                     + current demand 0x6074 (16b)                 = 8 B
+    // TPDO2 packs the drive-internal command (demand) values alongside current
+    // in the same 8-byte frame, so streaming them costs no extra bus bandwidth.
     // Statusword stays on the existing 2 Hz SDO poll for fault detection.
     //
     // Standard remap procedure per PDO: disable the PDO (COB-ID bit 31), set the
@@ -471,6 +474,8 @@ void SendCanCommandToElmoNode::configure_pdo_mapping(int node_id) {
     const uint32_t map_position = (static_cast<uint32_t>(CANOPEN_POSITION_ACTUAL) << 16) | 0x20;
     const uint32_t map_velocity = (static_cast<uint32_t>(CANOPEN_VELOCITY_ACTUAL) << 16) | 0x20;
     const uint32_t map_current = (static_cast<uint32_t>(CANOPEN_CURRENT_ACTUAL) << 16) | 0x10;
+    const uint32_t map_vel_demand = (static_cast<uint32_t>(CANOPEN_VELOCITY_DEMAND) << 16) | 0x20;
+    const uint32_t map_current_demand = (static_cast<uint32_t>(CANOPEN_CURRENT_DEMAND) << 16) | 0x10;
 
     const uint32_t cob1 = CANOPEN_TPDO1_COB_BASE + id;
     write_sdo(CANOPEN_TPDO1_COMM, 1, cob1 | 0x80000000u, 4);  // disable
@@ -486,7 +491,9 @@ void SendCanCommandToElmoNode::configure_pdo_mapping(int node_id) {
     write_sdo(CANOPEN_TPDO2_COMM, 2, 1, 1);                   // transmit on every SYNC
     write_sdo(CANOPEN_TPDO2_MAP, 0, 0, 1);                    // clear mapping
     write_sdo(CANOPEN_TPDO2_MAP, 1, map_current, 4);
-    write_sdo(CANOPEN_TPDO2_MAP, 0, 1, 1);                    // one entry
+    write_sdo(CANOPEN_TPDO2_MAP, 2, map_vel_demand, 4);
+    write_sdo(CANOPEN_TPDO2_MAP, 3, map_current_demand, 4);
+    write_sdo(CANOPEN_TPDO2_MAP, 0, 3, 1);                    // three entries
     write_sdo(CANOPEN_TPDO2_COMM, 1, cob2, 4);               // re-enable
 }
 

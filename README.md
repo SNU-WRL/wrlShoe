@@ -76,14 +76,23 @@ sudo ip link set can1 up type can bitrate 1000000
   Shutdown → Switch On → Enable Operation) to bring it back into Operation
   Enabled. The control loop blocks for ~0.5 s during this recovery.
 - Motor feedback (PDO): each drive streams CiA-402 position (`0x6064`),
-  velocity (`0x606C`), and current (`0x6078`) via two SYNC-triggered TPDOs,
-  mapped at init (`send_can_command_to_elmo_node` configures the TPDOs in NMT
-  Pre-Operational before `NMT Start`):
-    - TPDO1 (`0x180+id`): position + velocity
-    - TPDO2 (`0x280+id`): current
+  velocity (`0x606C`), current (`0x6078`), and the drive-internal command
+  (demand) values — velocity demand (`0x606B`) and current demand (`0x6074`) —
+  via two SYNC-triggered TPDOs, mapped at init (`send_can_command_to_elmo_node`
+  configures the TPDOs in NMT Pre-Operational before `NMT Start`):
+    - TPDO1 (`0x180+id`): position + velocity (8 B)
+    - TPDO2 (`0x280+id`): current + velocity demand + current demand (8 B)
+  The demand values are what the ELMO's own control loops command the motor: the
+  velocity setpoint after profile shaping, and the current the controller is
+  requesting. (`current_demand` maps the CiA-402 torque-demand object `0x6074`;
+  on a current-mode ELMO drive torque demand is the commanded current, in the
+  same per-mille-of-rated scale as the `0x6078` current actual, so the two
+  compare directly as command vs. measured.) These are distinct from the
+  `0x60FF` target velocity we send and from the actual feedback above, and they
+  ride in TPDO2's spare bytes, so they add no extra bus traffic.
   The TPDOs are transmission type 1 (on every SYNC). `read_can_malfunction_from_elmo_node`
   emits one SYNC (`0x80`) per control-loop tick (1 kHz), so feedback updates at
-  1 kHz; it parses the TPDOs into `motor_{left,right}_{position,velocity,current}`.
+  1 kHz; it parses the TPDOs into `motor_{left,right}_{position,velocity,current,velocity_demand,current_demand}`.
   The CSV logger still samples every 10 ms, so the log captures this at 100 Hz
   (raise the log rate to capture the full 1 kHz). Statusword stays on a 2 Hz SDO
   poll for fault detection. Bus cost on can0: SYNC + 2 TPDOs × 2 drives at 1 kHz

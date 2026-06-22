@@ -99,6 +99,7 @@ int main(int argc, char* argv[]) {
         const int loop_hz = (cfg.loop_frequency_hz > 0) ? cfg.loop_frequency_hz : 1000;
         const auto period = std::chrono::microseconds(1000000 / loop_hz);
         uint64_t tick_count = 0;
+        uint32_t prev_log_us = 0;  // previous tick's logging cost (see log_latency_us)
 
         struct LatencyStats {
             uint64_t samples = 0;
@@ -164,17 +165,25 @@ int main(int argc, char* argv[]) {
             if (cmd_us > stats.cmd_max_us) stats.cmd_max_us = cmd_us;
             if (loop_us > stats.loop_max_us) stats.loop_max_us = loop_us;
 
+            // Time the logging path (snapshot copy + queue + every-10th-tick
+            // flush) separately from loop_latency_us. The cost is carried into
+            // the next snapshot, so log_latency_us is one tick delayed.
+            const auto log_start = std::chrono::steady_clock::now();
             auto snapshot = bus.snapshot();
             snapshot.imu_node_latency_us = imu_us;
             snapshot.status_node_latency_us = status_us;
             snapshot.gait_node_latency_us = gait_us;
             snapshot.command_node_latency_us = cmd_us;
             snapshot.loop_latency_us = loop_us;
+            snapshot.log_latency_us = prev_log_us;
             logger.queue_snapshot(snapshot);
 
             if ((tick_count % 10) == 0) {
                 logger.flush();
             }
+            prev_log_us = static_cast<uint32_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - log_start).count());
             ++tick_count;
 
             std::this_thread::sleep_until(next_tick);
