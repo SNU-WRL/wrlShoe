@@ -34,20 +34,20 @@ struct SlipConfig {
 struct GaitThresholds {
     // Gyro thresholds (rad/s): converted from deg/s
     // -80 deg/s = -1.3963 rad/s, -30 deg/s = -0.5236 rad/s, -200 deg/s = -3.4907 rad/s
-    float hs_threshold = -1.3963f;  // Heel Strike threshold (was -80 deg/s)
-    float ts_threshold = -0.5236f;  // Toe Strike threshold (was -30 deg/s)
-    float ho_threshold = -0.5236f;  // Heel Off threshold (was -30 deg/s)
-    float to_threshold = -3.4907f;  // Toe Off threshold (was -200 deg/s)
-    // Accel thresholds (m/s^2): tuned to actual walking data
-    // observed accel norm: median ~9.7, max ~46 (includes gravity)
-    float swing_threshold = 25.0f;  // Swing detection (reduced from 50.0 to match data)
-    float midstance_threshold = 12.0f;  // Midstance window (increased from 3.0)
-    // Heel-strike impact gating. Without these the Swing->HS transition fires as
-    // soon as accel_norm dips below midstance_threshold during mid-swing (the
-    // foot's accel norm returns to ~gravity well before the foot actually lands),
-    // causing slip-perturbation commands to fire during swing.
-    float impact_threshold = 20.0f;     // min accel_norm peak required during swing before HS allowed
-    int min_swing_dwell_ms = 150;       // min time in Swing before HS allowed
+    float hs_threshold = -1.3963f;  // Heel Strike: gyro_z negative-peak threshold (was -80 deg/s)
+    float ts_threshold = -0.5236f;  // Toe Strike: gyro_z up-cross threshold (was -30 deg/s)
+    float ho_threshold = -0.15f;    // Heel Off: gyro_z down-cross threshold
+    float to_threshold = -3.4907f;  // Toe Off: gyro_z negative-peak threshold (was -200 deg/s)
+    // Into-swing gyro threshold (rad/s). Original used +50 deg/s = 0.873 rad/s on
+    // the forward (positive) gyro_z swing, NOT an accel magnitude.
+    float swing_gyro_threshold = 0.8727f;
+    // Midstance "quiet" threshold on the GRAVITY-FREE accel norm (m/s^2). The old
+    // value of 12 was inflated only because the raw accel still carried gravity;
+    // on free acceleration the foot is near-zero at rest, so 3 is correct.
+    float midstance_threshold = 3.0f;
+    // Minimum dwell in Swing before a heel strike may fire, so the HS peak
+    // detector can't latch onto an early-swing gyro dip.
+    int min_swing_dwell_ms = 150;
 };
 
 struct Config {
@@ -71,6 +71,16 @@ struct Config {
     float gait_sampling_frequency = 120.0f;
     bool gait_use_both_feet = false;
     GaitThresholds gait_thresholds;
+
+    // Length (samples) of the moving-average filter applied to gyro_z and the
+    // free-accel norm feeding the FSM. The original used int(fs*0.05) = 6 at
+    // 120 Hz. The filter's group delay of (window-1)/2 samples is compensated
+    // for in the back-dated event timestamps.
+    int gait_ma_window = 6;
+    // Number of still samples (|global accel| in [9,11] m/s^2) averaged at
+    // startup to estimate the per-foot gravity vector that is subtracted to
+    // produce free acceleration. ~0.5 s at 120 Hz.
+    int gravity_calib_samples = 60;
 
     std::unordered_map<std::string, int32_t> velocity_map{
         {"MSt", 0}, {"HO", 0}, {"TSt", 0}, {"TO", 50000}, {"Swing", 200000}, {"HS", 0}};
