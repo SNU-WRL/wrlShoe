@@ -10,6 +10,8 @@ SendCanCommandToElmoNode::SendCanCommandToElmoNode(const Config& cfg, DataBus& b
       can_socket_(std::make_unique<CANSocket>(cfg.can_elmo_interface)),
       left_node_id_(cfg.elmo_node_left),
       right_node_id_(cfg.elmo_node_right),
+      profile_acceleration_(cfg.profile_acceleration),
+      profile_deceleration_(cfg.profile_deceleration),
       velocity_map_(cfg.velocity_map) {
     // Run the blocking ELMO init off the main thread. The init sequence
     // issues ~7 SDO writes with 50 ms gaps on can0; running it inline blocks
@@ -415,20 +417,33 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configur
     can_socket_->send_message(mode.can_id, mode.data, mode.dlc);
     std::this_thread::sleep_for(50ms);
 
-    // Profile acceleration / deceleration. Slip mode wants a fast ramp so the
-    // motor reaches the commanded slip velocity before the burst ends; the
-    // override is consulted here (with the same 50 ms inter-SDO spacing the
-    // rest of init uses) rather than from the real-time tick path, where
-    // back-to-back SDO writes have been seen to make the drive silently
-    // abort and ignore later target-velocity writes.
+    // Profile acceleration / deceleration. The base values come from config
+    // (profile_acceleration_ / profile_deceleration_) and are written
+    // independently to 0x6083 and 0x6084, so accel and decel can differ.
+    // Slip mode wants a fast symmetric ramp so the motor reaches the commanded
+    // slip velocity before the burst ends; when slip_profile_acceleration_ > 0
+    // it overrides BOTH accel and decel. The override is consulted here (with
+    // the same 50 ms inter-SDO spacing the rest of init uses) rather than from
+    // the real-time tick path, where back-to-back SDO writes have been seen to
+    // make the drive silently abort and ignore later target-velocity writes.
+    //
+    // Ordering note: set_slip_profile_acceleration() runs after the constructor
+    // returns, but this init thread reads slip_profile_acceleration_ ~0.5 s into
+    // init, so the slip app's post-construction store is observed in time. This
+    // is order-dependent; if init timing ever changes, plumb the slip accel
+    // through the constructor instead.
     const int32_t slip_accel = slip_profile_acceleration_.load(std::memory_order_acquire);
-    const uint32_t accel_value = (slip_accel > 0) ? static_cast<uint32_t>(slip_accel) : 1000000;
+    const bool slip_override = slip_accel > 0;
+    const uint32_t accel_value =
+        slip_override ? static_cast<uint32_t>(slip_accel) : static_cast<uint32_t>(profile_acceleration_);
+    const uint32_t decel_value =
+        slip_override ? static_cast<uint32_t>(slip_accel) : static_cast<uint32_t>(profile_deceleration_);
 
     auto accel = create_sdo_download(node_id, 0x6083, 0, accel_value, 4);
     can_socket_->send_message(accel.can_id, accel.data, accel.dlc);
     std::this_thread::sleep_for(50ms);
 
-    auto decel = create_sdo_download(node_id, 0x6084, 0, accel_value, 4);
+    auto decel = create_sdo_download(node_id, 0x6084, 0, decel_value, 4);
     can_socket_->send_message(decel.can_id, decel.data, decel.dlc);
     std::this_thread::sleep_for(50ms);
 

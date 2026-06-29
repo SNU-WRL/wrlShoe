@@ -188,6 +188,17 @@ Config load_config(const std::string& path) {
 
     apply_int(kv, "loop_frequency", cfg.loop_frequency_hz);
 
+    {
+        int v = cfg.profile_acceleration;
+        apply_int(kv, "elmo_config.profile_acceleration", v);
+        cfg.profile_acceleration = static_cast<int32_t>(v);
+    }
+    {
+        int v = cfg.profile_deceleration;
+        apply_int(kv, "elmo_config.profile_deceleration", v);
+        cfg.profile_deceleration = static_cast<int32_t>(v);
+    }
+
     apply_float(kv, "gait_detection.sampling_frequency", cfg.gait_sampling_frequency);
     apply_bool(kv, "gait_detection.use_both_feet", cfg.gait_use_both_feet);
 

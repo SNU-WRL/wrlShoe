@@ -71,6 +71,10 @@ private:
 
     int left_node_id_;
     int right_node_id_;
+    // Base ELMO profile accel/decel (0x6083 / 0x6084) from config, written at
+    // init unless overridden by the slip fast-ramp (slip_profile_acceleration_).
+    int32_t profile_acceleration_;
+    int32_t profile_deceleration_;
     std::unordered_map<std::string, int32_t> velocity_map_;
     std::unordered_set<std::string> active_fault_foot_names_;
     uint32_t last_left_detection_count_ = 0;

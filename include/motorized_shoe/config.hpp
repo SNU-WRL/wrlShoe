@@ -62,6 +62,12 @@ struct Config {
 
     int loop_frequency_hz = 1000;
 
+    // ELMO profile acceleration / deceleration (counts/sec^2) written to 0x6083 /
+    // 0x6084 at drive init. Defaults match the historic hardcoded 1e6 so behavior
+    // is unchanged when elmo_config.profile_{accel,decel} are absent from the YAML.
+    int32_t profile_acceleration = 1000000;
+    int32_t profile_deceleration = 1000000;
+
     float gait_sampling_frequency = 120.0f;
     bool gait_use_both_feet = false;
     GaitThresholds gait_thresholds;
