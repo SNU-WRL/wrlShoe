@@ -74,6 +74,10 @@ void SlipPerturbationNode::tick() {
         return;
     }
 
+    // Keep the stance estimate fresh every tick, independent of arming, so a
+    // BeforeTO arm can schedule against a warm estimate immediately.
+    update_stance_estimator();
+
     // Detection step. May set state_ = DelayingBeforeSlip with a deadline that
     // is already in the past (the gait event happened a few ms before this
     // tick); we then want to start the slip in the SAME tick rather than
@@ -81,7 +85,45 @@ void SlipPerturbationNode::tick() {
     if (state_ == State::ArmedAfterHS) {
         scan_for_trigger_event("HS", cfg_.mode1_delay_after_hs_ms);
     } else if (state_ == State::ArmedBeforeTO) {
-        scan_for_trigger_event("MSt", cfg_.mode2_delay_after_mst_ms);
+        // Forward slip: on the NEXT HS after arming, schedule the slip to land
+        // just before the predicted toe-off.
+        bool scheduled = false;
+        bus_.for_each_gait_event_since(
+            cfg_.foot, last_seen_detection_count_, [&](const GaitPhase& ev) {
+                if (scheduled) return;
+                last_seen_detection_count_ = ev.detection_count;
+                if (ev.phase != "HS") return;
+                if (schedule_before_to(ev.timestamp_ns)) {
+                    before_to_anchor_count_ = ev.detection_count;
+                    state_ = State::DelayingBeforeSlip;
+                    scheduled = true;
+                }
+                // If stance_est isn't warm yet schedule_before_to() returns false;
+                // skip this HS and wait for the next one (the estimator warms after
+                // one completed HS->TO stance).
+            });
+        if (scheduled) {
+            const int64_t stance_ns = stance_estimate_ns();
+            std::cout << "[slip] BeforeTO HS anchor (count=" << before_to_anchor_count_
+                      << "); stance_est=" << (stance_ns / 1000000) << " ms, lead="
+                      << cfg_.to_slip_lead_ms << " ms -> firing before predicted TO\n";
+            std::cout.flush();
+        }
+    }
+
+    // Forward slip reschedule: if a newer HS arrives before we fire (cadence
+    // sped up / overshoot), cancel and re-anchor on it rather than firing late.
+    if (state_ == State::DelayingBeforeSlip && current_mode_ == Mode::BeforeTO) {
+        bus_.for_each_gait_event_since(
+            cfg_.foot, before_to_anchor_count_, [&](const GaitPhase& ev) {
+                if (ev.phase != "HS") return;
+                if (schedule_before_to(ev.timestamp_ns)) {
+                    before_to_anchor_count_ = ev.detection_count;
+                    std::cout << "[slip] BeforeTO rescheduled on newer HS (count="
+                              << before_to_anchor_count_ << ")\n";
+                    std::cout.flush();
+                }
+            });
     }
 
     // Deadline check. Fall through across states so a delay_ms of 0 (or a
@@ -128,13 +170,78 @@ void SlipPerturbationNode::scan_for_trigger_event(
     }
 }
 
+void SlipPerturbationNode::update_stance_estimator() {
+    bus_.for_each_gait_event_since(
+        cfg_.foot, est_cursor_, [&](const GaitPhase& ev) {
+            est_cursor_ = ev.detection_count;
+            if (ev.phase == "HS") {
+                if (est_have_last_hs_) {
+                    const int64_t period = ev.timestamp_ns - est_last_hs_ts_;
+                    if (period > 0) {
+                        est_hs_to_hs_ns_ = period;
+                    }
+                }
+                est_last_hs_ts_ = ev.timestamp_ns;
+                est_have_last_hs_ = true;
+                // Open a stance interval; the matching TO closes it.
+                est_pending_hs_ = true;
+                est_pending_hs_ts_ = ev.timestamp_ns;
+            } else if (ev.phase == "TO") {
+                if (est_pending_hs_) {
+                    const int64_t stance = ev.timestamp_ns - est_pending_hs_ts_;
+                    if (stance > 0) {
+                        stance_samples_ns_.push_back(stance);
+                        const size_t win = (cfg_.stance_est_window > 0)
+                                               ? static_cast<size_t>(cfg_.stance_est_window)
+                                               : 1;
+                        while (stance_samples_ns_.size() > win) {
+                            stance_samples_ns_.pop_front();
+                        }
+                    }
+                    est_pending_hs_ = false;
+                }
+            }
+        });
+}
+
+int64_t SlipPerturbationNode::stance_estimate_ns() const {
+    if (!stance_samples_ns_.empty()) {
+        int64_t sum = 0;
+        for (int64_t v : stance_samples_ns_) {
+            sum += v;
+        }
+        return sum / static_cast<int64_t>(stance_samples_ns_.size());
+    }
+    if (est_hs_to_hs_ns_ > 0) {
+        // Warm-up fallback before any stance has been measured: stance is ~0.60
+        // of the HS->HS gait period.
+        return static_cast<int64_t>(0.60 * static_cast<double>(est_hs_to_hs_ns_));
+    }
+    return 0;  // not warmed yet
+}
+
+bool SlipPerturbationNode::schedule_before_to(int64_t t_hs_ns) {
+    const int64_t stance_ns = stance_estimate_ns();
+    if (stance_ns <= 0) {
+        return false;
+    }
+    const int64_t lead_ns = static_cast<int64_t>(cfg_.to_slip_lead_ms) * 1000000LL;
+    int64_t delay_ns = stance_ns - lead_ns;
+    if (delay_ns < 0) {
+        delay_ns = 0;
+    }
+    const int64_t fire_ns = t_hs_ns + delay_ns;
+    timer_deadline_ =
+        std::chrono::steady_clock::time_point(std::chrono::nanoseconds(fire_ns));
+    return true;
+}
+
 void SlipPerturbationNode::start_slip_now() {
-    // BeforeTO (MSt-triggered) slips push the foot in the opposite direction
-    // of an HS-triggered slip — the perturbation simulates a foot slipping
-    // forward at push-off, the inverse of the heel-strike slip backward.
-    // We trigger off MSt entry + a tunable delay rather than HO because HO
-    // detection is jittery on the threshold crossing while MSt entry is a
-    // stable accel-quiet event ~200-450 ms before TO.
+    // BeforeTO slips push the foot in the opposite direction of an HS-triggered
+    // slip — the perturbation simulates a foot slipping forward at push-off, the
+    // inverse of the heel-strike slip backward. The onset is PREDICTED from the
+    // HS anchor (stance_est - to_slip_lead_ms) because TO detection is
+    // after-the-fact and cannot be reacted to before toe-off actually happens.
     const int32_t velocity = (current_mode_ == Mode::BeforeTO)
                                  ? -cfg_.slip_velocity
                                  : cfg_.slip_velocity;

@@ -203,17 +203,21 @@ Config load_config(const std::string& path) {
     apply_bool(kv, "gait_detection.use_both_feet", cfg.gait_use_both_feet);
 
     apply_float(kv, "gait_detection.thresholds.hs_threshold", cfg.gait_thresholds.hs_threshold);
+    apply_float(kv, "gait_detection.thresholds.to_threshold", cfg.gait_thresholds.to_threshold);
+    apply_int(kv, "gait_detection.thresholds.min_swing_dwell_ms", cfg.gait_thresholds.min_swing_dwell_ms);
+    apply_bool(kv, "gait_detection.thresholds.hs_accel_veto", cfg.gait_thresholds.hs_accel_veto);
+    apply_float(kv, "gait_detection.thresholds.hs_impact_threshold", cfg.gait_thresholds.hs_impact_threshold);
+    // Deprecated thresholds (parsed for config compatibility, unused by the FSM).
     apply_float(kv, "gait_detection.thresholds.ts_threshold", cfg.gait_thresholds.ts_threshold);
     apply_float(kv, "gait_detection.thresholds.ho_threshold", cfg.gait_thresholds.ho_threshold);
-    apply_float(kv, "gait_detection.thresholds.to_threshold", cfg.gait_thresholds.to_threshold);
     apply_float(kv, "gait_detection.thresholds.swing_gyro_threshold", cfg.gait_thresholds.swing_gyro_threshold);
     apply_float(kv, "gait_detection.thresholds.midstance_threshold", cfg.gait_thresholds.midstance_threshold);
-    apply_int(kv, "gait_detection.thresholds.min_swing_dwell_ms", cfg.gait_thresholds.min_swing_dwell_ms);
 
+    apply_int(kv, "gait_detection.state_timeout_ms", cfg.gait_state_timeout_ms);
     apply_int(kv, "gait_detection.ma_window", cfg.gait_ma_window);
     apply_int(kv, "gait_detection.gravity_calib_samples", cfg.gravity_calib_samples);
 
-    for (const char* phase : {"MSt", "HO", "TSt", "TO", "Swing", "HS"}) {
+    for (const char* phase : {"Stance", "Swing"}) {
         const std::string key = std::string("gait_detection.velocity_map.") + phase;
         const std::string value = find_value(kv, key);
         if (!value.empty()) {
@@ -230,6 +234,9 @@ Config load_config(const std::string& path) {
     }
     apply_int(kv, "slip_perturbation.slip_duration_ms", cfg.slip.slip_duration_ms);
     apply_int(kv, "slip_perturbation.mode1_delay_after_hs_ms", cfg.slip.mode1_delay_after_hs_ms);
+    apply_int(kv, "slip_perturbation.to_slip_lead_ms", cfg.slip.to_slip_lead_ms);
+    apply_int(kv, "slip_perturbation.stance_est_window", cfg.slip.stance_est_window);
+    // Deprecated: superseded by to_slip_lead_ms. Parsed but unused.
     apply_int(kv, "slip_perturbation.mode2_delay_after_mst_ms", cfg.slip.mode2_delay_after_mst_ms);
     {
         int v = cfg.slip.slip_profile_acceleration;
