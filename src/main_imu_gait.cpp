@@ -79,6 +79,7 @@ int main(int argc, char* argv[]) {
         const int loop_hz = (cfg.loop_frequency_hz > 0) ? cfg.loop_frequency_hz : 1000;
         const auto period = std::chrono::microseconds(1000000 / loop_hz);
         uint64_t tick_count = 0;
+        uint32_t prev_log_us = 0;  // previous tick's logging cost (see log_latency_us)
 
         std::cout << "Starting IMU+Gait loop at " << loop_hz
                   << " Hz. Logging every 10ms to " << log_path << '\n';
@@ -105,10 +106,16 @@ int main(int argc, char* argv[]) {
             const uint32_t loop_us = static_cast<uint32_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(gait_end - tick_start).count());
 
+            // Time the logging path (snapshot copy + queue + periodic flush)
+            // separately from loop_latency_us. Carried into the next snapshot,
+            // so log_latency_us is one tick delayed. Includes the every-5s
+            // console print in this diagnostic app.
+            const auto log_start = std::chrono::steady_clock::now();
             auto snapshot = bus.snapshot();
             snapshot.imu_node_latency_us = imu_us;
             snapshot.gait_node_latency_us = gait_us;
             snapshot.loop_latency_us = loop_us;
+            snapshot.log_latency_us = prev_log_us;
             logger.queue_snapshot(snapshot);
 
             if ((tick_count % (loop_hz / 10)) == 0) {  // Every 100ms
@@ -120,6 +127,9 @@ int main(int argc, char* argv[]) {
                     std::cout.flush();
                 }
             }
+            prev_log_us = static_cast<uint32_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - log_start).count());
             ++tick_count;
 
             std::this_thread::sleep_until(next_tick);

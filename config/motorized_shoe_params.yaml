@@ -40,18 +40,26 @@ gait_detection:
 
   # Thresholds for gait event detection (gyro thresholds are in rad/s)
   thresholds:
-    hs_threshold: -1.3963
-    ts_threshold: -0.5236
-    ho_threshold: -0.15
-    to_threshold: -3.4907
-    swing_threshold: 25.0
-    midstance_threshold: 12.0
-    # Heel-strike gating: require an impact-magnitude accel spike during swing
-    # AND a minimum swing dwell before allowing Swing -> HS. Without these the
-    # FSM declares HS as soon as accel_norm dips below midstance_threshold
-    # during mid-swing, which fires slip commands ~120 ms before actual landing.
-    impact_threshold: 20.0
+    hs_threshold: -1.3963       # heel-strike gyro_z negative peak
+    ts_threshold: -0.5236       # toe-strike gyro_z up-cross
+    ho_threshold: -0.15         # heel-off gyro_z down-cross
+    to_threshold: -3.4907       # toe-off gyro_z negative peak
+    swing_gyro_threshold: 0.8727  # into-swing forward gyro_z (+50 deg/s)
+    # Midstance "quiet" threshold on the GRAVITY-FREE accel norm (m/s^2). On free
+    # acceleration the foot is near-zero at rest, so 3 is correct (the old 12 was
+    # inflated only because raw accel still carried gravity).
+    midstance_threshold: 3.0
+    # Minimum dwell in Swing before a heel strike may fire, so the HS negative-peak
+    # detector cannot latch onto an early-swing gyro dip.
     min_swing_dwell_ms: 220
+
+  # Moving-average window (samples) on gyro_z and the free-accel norm feeding the
+  # FSM. Original used int(fs*0.05) = 6 at 120 Hz. The (window-1)/2-sample group
+  # delay is compensated for in back-dated event timestamps.
+  ma_window: 6
+  # Still samples (|global accel| in [9,11] m/s^2) averaged at startup to estimate
+  # the per-foot gravity vector subtracted to produce free acceleration.
+  gravity_calib_samples: 60
 
 # ELMO CANopen Configuration
 elmo_config:

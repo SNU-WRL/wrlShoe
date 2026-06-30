@@ -70,12 +70,20 @@ struct ElmoStatus {
     bool valid = false;
 };
 
-// Live motor feedback read back from an ELMO drive (CiA-402 objects):
-//   position  = 0x6064 Position actual value   (counts, INT32)
-//   velocity  = 0x606C Velocity actual value   (counts/sec, INT32)
-//   current   = 0x6078 Current actual value    (per-mille of rated current, INT16)
-// Each field carries its own valid flag because the values arrive as separate
-// SDO upload responses; a field stays invalid until its first response lands.
+// Live motor feedback + drive-internal commands read back from an ELMO drive
+// (CiA-402 objects):
+//   position        = 0x6064 Position actual value (counts, INT32)
+//   velocity        = 0x606C Velocity actual value (counts/sec, INT32)
+//   current         = 0x6078 Current actual value  (per-mille of rated current, INT16)
+//   velocity_demand = 0x606B Velocity demand value (counts/sec, INT32) -- the
+//                     drive's internal velocity setpoint after profile shaping
+//   current_demand  = 0x6074 Torque demand value   (per-mille of rated torque,
+//                     INT16) -- the controller output. On a current-mode ELMO
+//                     drive this is the commanded current (torque is produced by
+//                     q-axis current); same per-mille scale as `current` above,
+//                     so the two compare directly as command vs. measured.
+// Each field carries its own valid flag because the values arrive in separate
+// TPDOs; a field stays invalid until its first frame lands.
 struct ElmoMotorInfo {
     int64_t timestamp_ns = 0;
     std::string foot;
@@ -83,10 +91,14 @@ struct ElmoMotorInfo {
     int32_t position = 0;
     int32_t velocity = 0;
     int16_t current = 0;
+    int32_t velocity_demand = 0;
+    int16_t current_demand = 0;
 
     bool position_valid = false;
     bool velocity_valid = false;
     bool current_valid = false;
+    bool velocity_demand_valid = false;
+    bool current_demand_valid = false;
     bool valid = false;
 };
 
@@ -108,6 +120,12 @@ struct SystemSnapshot {
     uint32_t gait_node_latency_us = 0;
     uint32_t command_node_latency_us = 0;
     uint32_t loop_latency_us = 0;
+
+    // Cost of the logging path on the control-loop thread (snapshot copy + queue
+    // + the every-10th-tick flush to disk), which falls *outside* loop_latency_us.
+    // Recorded one tick late: the value in row N is the logging cost measured
+    // during the previous tick (a snapshot can't carry its own logging time).
+    uint32_t log_latency_us = 0;
 };
 
 }  // namespace motorized_shoe

@@ -188,6 +188,17 @@ Config load_config(const std::string& path) {
 
     apply_int(kv, "loop_frequency", cfg.loop_frequency_hz);
 
+    {
+        int v = cfg.profile_acceleration;
+        apply_int(kv, "elmo_config.profile_acceleration", v);
+        cfg.profile_acceleration = static_cast<int32_t>(v);
+    }
+    {
+        int v = cfg.profile_deceleration;
+        apply_int(kv, "elmo_config.profile_deceleration", v);
+        cfg.profile_deceleration = static_cast<int32_t>(v);
+    }
+
     apply_float(kv, "gait_detection.sampling_frequency", cfg.gait_sampling_frequency);
     apply_bool(kv, "gait_detection.use_both_feet", cfg.gait_use_both_feet);
 
@@ -195,10 +206,12 @@ Config load_config(const std::string& path) {
     apply_float(kv, "gait_detection.thresholds.ts_threshold", cfg.gait_thresholds.ts_threshold);
     apply_float(kv, "gait_detection.thresholds.ho_threshold", cfg.gait_thresholds.ho_threshold);
     apply_float(kv, "gait_detection.thresholds.to_threshold", cfg.gait_thresholds.to_threshold);
-    apply_float(kv, "gait_detection.thresholds.swing_threshold", cfg.gait_thresholds.swing_threshold);
+    apply_float(kv, "gait_detection.thresholds.swing_gyro_threshold", cfg.gait_thresholds.swing_gyro_threshold);
     apply_float(kv, "gait_detection.thresholds.midstance_threshold", cfg.gait_thresholds.midstance_threshold);
-    apply_float(kv, "gait_detection.thresholds.impact_threshold", cfg.gait_thresholds.impact_threshold);
     apply_int(kv, "gait_detection.thresholds.min_swing_dwell_ms", cfg.gait_thresholds.min_swing_dwell_ms);
+
+    apply_int(kv, "gait_detection.ma_window", cfg.gait_ma_window);
+    apply_int(kv, "gait_detection.gravity_calib_samples", cfg.gravity_calib_samples);
 
     for (const char* phase : {"MSt", "HO", "TSt", "TO", "Swing", "HS"}) {
         const std::string key = std::string("gait_detection.velocity_map.") + phase;

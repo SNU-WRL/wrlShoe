@@ -17,9 +17,11 @@ DataLogger::DataLogger(const std::string& path) : file_(path, std::ios::out | st
           << "gait_right_phase,gait_right_detection_count,gait_right_gyro_z,"
           << "cmd_left_velocity,cmd_left_type,cmd_right_velocity,cmd_right_type,"
             << "status_left_word,status_left_fault,status_right_word,status_right_fault,"
-            << "imu_node_latency_us,status_node_latency_us,gait_node_latency_us,command_node_latency_us,loop_latency_us,"
+            << "imu_node_latency_us,status_node_latency_us,gait_node_latency_us,command_node_latency_us,loop_latency_us,log_latency_us,"
             << "motor_left_position,motor_left_velocity,motor_left_current,"
-            << "motor_right_position,motor_right_velocity,motor_right_current"
+            << "motor_left_velocity_demand,motor_left_current_demand,"
+            << "motor_right_position,motor_right_velocity,motor_right_current,"
+            << "motor_right_velocity_demand,motor_right_current_demand"
           << '\n';
 
     file_ << std::fixed << std::setprecision(6);
@@ -64,9 +66,11 @@ void DataLogger::write_row(const SystemSnapshot& s) {
           << s.status_right.status_word << ',' << (s.status_right.fault ? 1 : 0) << ','
           << s.imu_node_latency_us << ',' << s.status_node_latency_us << ','
           << s.gait_node_latency_us << ',' << s.command_node_latency_us << ','
-          << s.loop_latency_us << ','
+          << s.loop_latency_us << ',' << s.log_latency_us << ','
           << s.motor_left.position << ',' << s.motor_left.velocity << ',' << s.motor_left.current << ','
-          << s.motor_right.position << ',' << s.motor_right.velocity << ',' << s.motor_right.current
+          << s.motor_left.velocity_demand << ',' << s.motor_left.current_demand << ','
+          << s.motor_right.position << ',' << s.motor_right.velocity << ',' << s.motor_right.current << ','
+          << s.motor_right.velocity_demand << ',' << s.motor_right.current_demand
           << '\n';
 }
 

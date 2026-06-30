@@ -10,6 +10,8 @@ SendCanCommandToElmoNode::SendCanCommandToElmoNode(const Config& cfg, DataBus& b
       can_socket_(std::make_unique<CANSocket>(cfg.can_elmo_interface)),
       left_node_id_(cfg.elmo_node_left),
       right_node_id_(cfg.elmo_node_right),
+      profile_acceleration_(cfg.profile_acceleration),
+      profile_deceleration_(cfg.profile_deceleration),
       velocity_map_(cfg.velocity_map) {
     // Run the blocking ELMO init off the main thread. The init sequence
     // issues ~7 SDO writes with 50 ms gaps on can0; running it inline blocks
@@ -415,20 +417,33 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configur
     can_socket_->send_message(mode.can_id, mode.data, mode.dlc);
     std::this_thread::sleep_for(50ms);
 
-    // Profile acceleration / deceleration. Slip mode wants a fast ramp so the
-    // motor reaches the commanded slip velocity before the burst ends; the
-    // override is consulted here (with the same 50 ms inter-SDO spacing the
-    // rest of init uses) rather than from the real-time tick path, where
-    // back-to-back SDO writes have been seen to make the drive silently
-    // abort and ignore later target-velocity writes.
+    // Profile acceleration / deceleration. The base values come from config
+    // (profile_acceleration_ / profile_deceleration_) and are written
+    // independently to 0x6083 and 0x6084, so accel and decel can differ.
+    // Slip mode wants a fast symmetric ramp so the motor reaches the commanded
+    // slip velocity before the burst ends; when slip_profile_acceleration_ > 0
+    // it overrides BOTH accel and decel. The override is consulted here (with
+    // the same 50 ms inter-SDO spacing the rest of init uses) rather than from
+    // the real-time tick path, where back-to-back SDO writes have been seen to
+    // make the drive silently abort and ignore later target-velocity writes.
+    //
+    // Ordering note: set_slip_profile_acceleration() runs after the constructor
+    // returns, but this init thread reads slip_profile_acceleration_ ~0.5 s into
+    // init, so the slip app's post-construction store is observed in time. This
+    // is order-dependent; if init timing ever changes, plumb the slip accel
+    // through the constructor instead.
     const int32_t slip_accel = slip_profile_acceleration_.load(std::memory_order_acquire);
-    const uint32_t accel_value = (slip_accel > 0) ? static_cast<uint32_t>(slip_accel) : 1000000;
+    const bool slip_override = slip_accel > 0;
+    const uint32_t accel_value =
+        slip_override ? static_cast<uint32_t>(slip_accel) : static_cast<uint32_t>(profile_acceleration_);
+    const uint32_t decel_value =
+        slip_override ? static_cast<uint32_t>(slip_accel) : static_cast<uint32_t>(profile_deceleration_);
 
     auto accel = create_sdo_download(node_id, 0x6083, 0, accel_value, 4);
     can_socket_->send_message(accel.can_id, accel.data, accel.dlc);
     std::this_thread::sleep_for(50ms);
 
-    auto decel = create_sdo_download(node_id, 0x6084, 0, accel_value, 4);
+    auto decel = create_sdo_download(node_id, 0x6084, 0, decel_value, 4);
     can_socket_->send_message(decel.can_id, decel.data, decel.dlc);
     std::this_thread::sleep_for(50ms);
 
@@ -451,7 +466,10 @@ void SendCanCommandToElmoNode::configure_pdo_mapping(int node_id) {
     // Configure two SYNC-triggered TPDOs per drive so motor feedback streams at
     // the SYNC rate (1 kHz) without per-value SDO request frames:
     //   TPDO1 (0x180+id): position 0x6064 (32b) + velocity 0x606C (32b) = 8 B
-    //   TPDO2 (0x280+id): current  0x6078 (16b)                          = 2 B
+    //   TPDO2 (0x280+id): current 0x6078 (16b) + velocity demand 0x606B (32b)
+    //                     + current demand 0x6074 (16b)                 = 8 B
+    // TPDO2 packs the drive-internal command (demand) values alongside current
+    // in the same 8-byte frame, so streaming them costs no extra bus bandwidth.
     // Statusword stays on the existing 2 Hz SDO poll for fault detection.
     //
     // Standard remap procedure per PDO: disable the PDO (COB-ID bit 31), set the
@@ -471,6 +489,8 @@ void SendCanCommandToElmoNode::configure_pdo_mapping(int node_id) {
     const uint32_t map_position = (static_cast<uint32_t>(CANOPEN_POSITION_ACTUAL) << 16) | 0x20;
     const uint32_t map_velocity = (static_cast<uint32_t>(CANOPEN_VELOCITY_ACTUAL) << 16) | 0x20;
     const uint32_t map_current = (static_cast<uint32_t>(CANOPEN_CURRENT_ACTUAL) << 16) | 0x10;
+    const uint32_t map_vel_demand = (static_cast<uint32_t>(CANOPEN_VELOCITY_DEMAND) << 16) | 0x20;
+    const uint32_t map_current_demand = (static_cast<uint32_t>(CANOPEN_CURRENT_DEMAND) << 16) | 0x10;
 
     const uint32_t cob1 = CANOPEN_TPDO1_COB_BASE + id;
     write_sdo(CANOPEN_TPDO1_COMM, 1, cob1 | 0x80000000u, 4);  // disable
@@ -486,7 +506,9 @@ void SendCanCommandToElmoNode::configure_pdo_mapping(int node_id) {
     write_sdo(CANOPEN_TPDO2_COMM, 2, 1, 1);                   // transmit on every SYNC
     write_sdo(CANOPEN_TPDO2_MAP, 0, 0, 1);                    // clear mapping
     write_sdo(CANOPEN_TPDO2_MAP, 1, map_current, 4);
-    write_sdo(CANOPEN_TPDO2_MAP, 0, 1, 1);                    // one entry
+    write_sdo(CANOPEN_TPDO2_MAP, 2, map_vel_demand, 4);
+    write_sdo(CANOPEN_TPDO2_MAP, 3, map_current_demand, 4);
+    write_sdo(CANOPEN_TPDO2_MAP, 0, 3, 1);                    // three entries
     write_sdo(CANOPEN_TPDO2_COMM, 1, cob2, 4);               // re-enable
 }
 

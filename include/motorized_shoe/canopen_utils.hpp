@@ -34,6 +34,16 @@ namespace motorized_shoe {
 #define CANOPEN_VELOCITY_ACTUAL 0x606C  // INT32, counts/sec
 #define CANOPEN_CURRENT_ACTUAL 0x6078   // INT16, per-mille of rated current
 
+// CiA-402 drive-internal command (demand) objects: the output of the drive's
+// own control loops -- what the ELMO is commanding the motor, after profile
+// shaping (vs. our 0x60FF target velocity and the actual feedback above).
+#define CANOPEN_VELOCITY_DEMAND 0x606B  // INT32, counts/sec (velocity setpoint)
+// 0x6074 is CiA-402 "torque demand", but on a current-mode ELMO drive it IS the
+// commanded current (torque is produced by q-axis current). It is normalized to
+// per-mille of rated torque, the same scale as 0x6078 current actual (per-mille
+// of rated current), so the two are directly comparable as command vs. measured.
+#define CANOPEN_CURRENT_DEMAND 0x6074   // INT16, per-mille of rated torque/current
+
 #define CANOPEN_SHUTDOWN_STATE 0x0006
 #define CANOPEN_SWITCH_ON_STATE 0x0007
 #define CANOPEN_ENABLE_OPERATION_STATE 0x000F
