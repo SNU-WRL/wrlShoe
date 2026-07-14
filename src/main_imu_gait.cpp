@@ -34,7 +34,8 @@ int main(int argc, char* argv[]) {
     const std::time_t now_t = std::chrono::system_clock::to_time_t(now_sys);
     std::tm tm_now{};
     localtime_r(&now_t, &tm_now);
-    default_log_name << std::put_time(&tm_now, "%Y%m%d_%H%M%S") << "_imu_gait_log.csv";
+    // No motor drive in this app, so no velocity/accel config is embedded.
+    default_log_name << std::put_time(&tm_now, "%Y%m%d_%H%M%S") << "_gait_log.csv";
     std::string log_path = default_log_name.str();
 
     const char* default_paths[] = {

@@ -99,13 +99,15 @@ struct Args {
     int32_t accel = 10000000;  // 0x6083/0x6084 written at init; matches the app default
 };
 
-std::string default_log_name() {
+// Velocity is always 0 in this tool, so only the accel config is embedded:
+// <timestamp>_zero_a<accel>_log.csv
+std::string default_log_name(int32_t accel) {
     const auto now = std::chrono::system_clock::now();
     const std::time_t t = std::chrono::system_clock::to_time_t(now);
     std::tm tm{};
     localtime_r(&t, &tm);
     std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y%m%d_%H%M%S") << "_zero_velocity_log.csv";
+    oss << std::put_time(&tm, "%Y%m%d_%H%M%S") << "_zero_a" << accel << "_log.csv";
     return oss.str();
 }
 
@@ -168,7 +170,7 @@ Args parse_args(int argc, char** argv) {
         std::exit(2);
     }
     if (a.log_path.empty()) {
-        a.log_path = default_log_name();
+        a.log_path = default_log_name(a.accel);
     }
     return a;
 }
