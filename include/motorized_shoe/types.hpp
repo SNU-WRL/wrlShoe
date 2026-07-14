@@ -41,7 +41,7 @@ struct IMUData {
 struct GaitPhase {
     int64_t timestamp_ns = 0;
     std::string foot;
-    std::string phase = "MSt";
+    std::string phase = "Stance";
     float gyro_z_value = 0.0f;
     uint32_t detection_count = 0;
     bool valid = false;

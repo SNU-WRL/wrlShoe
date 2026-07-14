@@ -8,48 +8,63 @@
 
 namespace motorized_shoe {
 
+// Minimal two-state gait cycle, driven purely by gyro negative-peak detection:
+//   Stance -> waiting for the toe-off (TO) negative gyro peak.
+//   Swing  -> waiting for the heel-strike (HS) negative gyro peak.
+// The old six-state machine (HeelOff/ToeOff/HeelStrike/ToeStrike/MidStance) and
+// its accel-quiet midstance gate were removed: the midstance gate starved on the
+// gravity-removal residual and jammed the cycle in ToeStrike, which in turn
+// starved the MSt-gated forward slip. Transitions are now pure gyro; free-accel /
+// gravity estimation is no longer on the critical path.
 enum class GaitState {
-    MidStance,
-    HeelOff,
-    ToeOff,
-    Swing,
-    HeelStrike,
-    ToeStrike
+    Stance,
+    Swing
 };
 
 const char* gait_state_to_string(GaitState state);
-
-struct GaitFSMState {
-    GaitState current_state = GaitState::MidStance;
-    int searching_start_idx = 0;
-    uint32_t detection_count = 0;
-};
 
 class GaitEventFSM {
 public:
     GaitEventFSM(float fs = 120.0f, const std::string& foot = "Right");
 
-    void set_thresholds(float hs, float ts, float ho, float to, float swing_gyro,
-                        float midstance, int min_swing_dwell_ms);
+    // hs / to are the (negative) gyro_z peak thresholds in rad/s. min_swing_dwell_ms
+    // gates the HS detector so it cannot latch onto an early-swing dip.
+    void set_thresholds(float hs, float to, int min_swing_dwell_ms);
 
-    // Moving-average window (samples) on gyro_z and accel_norm. window <= 1
-    // disables filtering. The (window-1)/2-sample group delay is compensated
-    // for when back-dating event timestamps.
+    // Per-state resync: if a state's dwell exceeds max(state_timeout_ms,
+    // ~1.5x the most recent HS->HS cycle period) with no event, both peak
+    // detectors and the cycle clocks are reset and the machine drops to Stance,
+    // so a single missed gyro peak cannot stall it.
+    void set_state_timeout_ms(int ms);
+
+    // Optional HS accept gate: only declare a heel strike if a RAW |accel| impact
+    // spike exceeded impact_threshold (m/s^2) during the swing dwell. Uses the raw
+    // accel norm (the impact is ~30-40 m/s^2, gravity negligible), NOT the
+    // gravity-removed free accel, so it does not reinherit gravity-calibration
+    // fragility. Default off.
+    void set_hs_accel_veto(bool enabled, float impact_threshold);
+
+    // Moving-average window (samples) on gyro_z. window <= 1 disables filtering.
+    // The (window-1)/2-sample group delay is compensated for when back-dating
+    // event timestamps.
     void set_filter_window(int window);
 
     struct GaitEvent {
-        GaitState state = GaitState::MidStance;
+        GaitState state = GaitState::Stance;
         float gyro_z_value = 0.0f;
         uint32_t detection_count = 0;
         bool event_detected = false;
-        // Timestamp the event is attributed to. For the gyro negative-peak
-        // events (TO, HS) this is BACK-DATED to the peak sample (minus the
+        // Timestamp the event is attributed to. For both gyro negative-peak
+        // events (TO, HS) this is BACK-DATED to the trough sample (minus the
         // filter group delay), not the sample on which the event was declared.
-        // For the other events it is the current sample's timestamp.
         int64_t event_timestamp_ns = 0;
+        // "TO" or "HS" on the firing sample, "" otherwise. The slip node consumes
+        // these labels directly (HS = backward/AfterHS anchor + stance estimator;
+        // TO = stance estimator only).
+        const char* event_label = "";
     };
 
-    GaitEvent check_state_transition(float gyro_z, float accel_norm, float foot_angle,
+    GaitEvent check_state_transition(float gyro_z, float raw_accel_norm, float foot_angle,
                                      int64_t timestamp_ns);
 
 private:
@@ -74,37 +89,36 @@ private:
 
     float fs_;
     std::string foot_;
-    GaitFSMState fsm_state_;
+    GaitState current_state_ = GaitState::Stance;
+    uint32_t detection_count_ = 0;
 
     float hs_threshold_ = -1.3963f;
-    float ts_threshold_ = -0.5236f;
-    float ho_threshold_ = -0.15f;
     float to_threshold_ = -3.4907f;
-    float swing_gyro_threshold_ = 0.8727f;  // +50 deg/s
-    float midstance_threshold_ = 3.0f;
     int min_swing_samples_ = 18;  // ~150 ms at 120 Hz
+
+    // Resync timeout (samples) and recent cycle clock.
+    int state_timeout_samples_ = 240;  // ~2000 ms at 120 Hz
+    int state_dwell_samples_ = 0;
+    int64_t last_hs_ts_ns_ = 0;
+    int64_t recent_cycle_ns_ = 0;  // most recent HS->HS period
+    bool have_last_hs_ = false;
+
+    // Optional raw-accel impact gate on HS.
+    bool hs_accel_veto_ = false;
+    float hs_impact_threshold_ = 20.0f;
+    bool impact_seen_in_swing_ = false;
 
     // Moving-average filter state. ma_group_delay_ns_ = (window-1)/2 samples.
     int ma_window_ = 1;
     int64_t ma_group_delay_ns_ = 0;
     std::deque<float> gyro_ma_buffer_;
-    std::deque<float> accel_ma_buffer_;
 
     // Negative-peak detectors for the back-dated TO and HS events.
     PeakDetector to_detector_;
     PeakDetector hs_detector_;
 
-    // Per-swing dwell counter; reset on the ToeOff->Swing entry.
+    // Per-swing dwell counter; reset on the Stance->Swing (TO) transition.
     int swing_samples_ = 0;
-
-    // Previous filtered gyro_z, for the up-cross Toe-Strike detection.
-    bool have_prev_gyro_ = false;
-    float prev_gyro_ = 0.0f;
-
-    // Filtered free-accel history for the midstance "quiet" window check.
-    std::deque<float> accel_buffer_;
-
-    static constexpr size_t BUFFER_SIZE = 200;
 };
 
 }  // namespace motorized_shoe

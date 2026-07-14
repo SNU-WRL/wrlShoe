@@ -28,37 +28,43 @@ gait_detection:
   sampling_frequency: 120.0
   use_both_feet: false
 
-  # Velocity commands for each gait phase (counts/sec)
-  # Node expects keys: MSt, HO, TSt, TO, Swing, HS
+  # Velocity commands per continuous gait phase (counts/sec). The two-state FSM
+  # emits only "Stance" and "Swing", so the map keys on those (Swing drives the
+  # foot, Stance holds at 0). The old MSt/HO/TSt/TO/HS keys are obsolete.
   velocity_map:
-    MSt: 150000
-    HO: 150000
-    TSt: 150000
-    TO: 150000
+    Stance: 0
     Swing: 150000
-    HS: 150000
 
-  # Thresholds for gait event detection (gyro thresholds are in rad/s)
+  # FSM resync timeout (ms). If a state dwells longer than max(this, ~1.5x the
+  # recent HS->HS cycle period) with no event, both gyro peak detectors and the
+  # cycle clocks reset so a single missed gyro peak cannot stall the machine.
+  state_timeout_ms: 2000
+
+  # Thresholds for gait event detection (gyro thresholds are in rad/s). The
+  # two-state FSM uses only hs_threshold + to_threshold (the gyro negative peaks)
+  # and the swing dwell gate.
   thresholds:
     hs_threshold: -1.3963       # heel-strike gyro_z negative peak
-    ts_threshold: -0.5236       # toe-strike gyro_z up-cross
-    ho_threshold: -0.15         # heel-off gyro_z down-cross
     to_threshold: -3.4907       # toe-off gyro_z negative peak
-    swing_gyro_threshold: 0.8727  # into-swing forward gyro_z (+50 deg/s)
-    # Midstance "quiet" threshold on the GRAVITY-FREE accel norm (m/s^2). On free
-    # acceleration the foot is near-zero at rest, so 3 is correct (the old 12 was
-    # inflated only because raw accel still carried gravity).
-    midstance_threshold: 3.0
     # Minimum dwell in Swing before a heel strike may fire, so the HS negative-peak
     # detector cannot latch onto an early-swing gyro dip.
     min_swing_dwell_ms: 220
+    # Optional HS accept gate: require a RAW |accel| impact spike (m/s^2) during the
+    # swing dwell before accepting a heel strike. Uses raw accel (impact ~30-40
+    # m/s^2), NOT gravity-removed free accel. Default off.
+    hs_accel_veto: false
+    hs_impact_threshold: 20.0
+    # DEPRECATED (six-state FSM): parsed for compatibility but unused.
+    ts_threshold: -0.5236
+    ho_threshold: -0.15
+    swing_gyro_threshold: 0.8727
+    midstance_threshold: 3.0
 
-  # Moving-average window (samples) on gyro_z and the free-accel norm feeding the
-  # FSM. Original used int(fs*0.05) = 6 at 120 Hz. The (window-1)/2-sample group
-  # delay is compensated for in back-dated event timestamps.
+  # Moving-average window (samples) on gyro_z feeding the FSM. The (window-1)/2-
+  # sample group delay is compensated for in back-dated event timestamps.
   ma_window: 6
-  # Still samples (|global accel| in [9,11] m/s^2) averaged at startup to estimate
-  # the per-foot gravity vector subtracted to produce free acceleration.
+  # DEPRECATED: gravity estimation is no longer on the FSM path (the gyro-only
+  # two-state machine doesn't use free acceleration). Parsed but unused.
   gravity_calib_samples: 60
 
 # ELMO CANopen Configuration
@@ -78,17 +84,24 @@ elmo_config:
 
 # Slip Perturbation (used by motorized_shoe_slip_app)
 # Two modes selectable from keyboard, both one-shot per keypress:
-#   mode1_key: arm slip that fires `mode1_delay_after_hs_ms` after the next HS
-#   mode2_key: arm slip that fires `mode2_delay_after_mst_ms` after the next MSt
-#                entry. MSt -> TO is roughly 200-450 ms, so tune the delay to
-#                land the slip just before toe-off. MSt entry is more stable
-#                than HO threshold crossing, which is jittery by tens of ms.
+#   mode1_key (AfterHS, backward slip): fires `mode1_delay_after_hs_ms` after the
+#                next HS event.
+#   mode2_key (BeforeTO, forward slip): PREDICTED, HS-anchored. On the next HS it
+#                schedules the slip for t_HS + max(0, stance_est - to_slip_lead_ms)
+#                so the -velocity burst lands ~to_slip_lead_ms before the predicted
+#                toe-off. stance_est is a running average of measured (TO-HS)
+#                stance times; a newer HS before firing cancels and reschedules.
 slip_perturbation:
   enabled: true
   foot: "Right"
-  slip_velocity: 150000
+  slip_velocity: 200000
   slip_duration_ms: 500
-  mode1_delay_after_hs_ms: 150
+  mode1_delay_after_hs_ms: 0
+  # Forward-slip lead before the predicted toe-off (ms).
+  to_slip_lead_ms: 50
+  # Number of recent cycles averaged into the stance estimate.
+  stance_est_window: 4
+  # DEPRECATED: superseded by to_slip_lead_ms. Parsed but unused.
   mode2_delay_after_mst_ms: 200
   # Drive profile acceleration/deceleration in slip mode (counts/sec^2).
   # Init default is 1e6 → ~150 ms ramp for a 150k slip, so most of a short

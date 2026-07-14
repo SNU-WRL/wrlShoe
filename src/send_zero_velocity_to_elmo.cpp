@@ -42,7 +42,7 @@ void send_velocity_zero(CANSocket& sock, int node_id) {
     sock.send_message(msg.can_id, msg.data, msg.dlc);
 }
 
-void initialize_elmo(CANSocket& sock, int node_id) {
+void initialize_elmo(CANSocket& sock, int node_id, int32_t accel_value) {
     using namespace std::chrono_literals;
 
     auto nmt = create_nmt_message(static_cast<uint32_t>(node_id), CANOPEN_NMT_START);
@@ -59,12 +59,17 @@ void initialize_elmo(CANSocket& sock, int node_id) {
     sock.send_message(mode.can_id, mode.data, mode.dlc);
     std::this_thread::sleep_for(50ms);
 
-    auto accel = create_sdo_download(node_id, 0x6083, 0, 1000000, 4);
-    sock.send_message(accel.can_id, accel.data, accel.dlc);
+    // Profile accel/decel. Was hardcoded to 1e6, which silently knocked the
+    // drive's ramp back to 1e6 whenever this tool ran between slip sessions.
+    // Now sourced from --accel (default matches the app's 1e7) so it can't
+    // reset the drive behind the main app's back.
+    const uint32_t accel = static_cast<uint32_t>(accel_value);
+    auto accel_msg = create_sdo_download(node_id, 0x6083, 0, accel, 4);
+    sock.send_message(accel_msg.can_id, accel_msg.data, accel_msg.dlc);
     std::this_thread::sleep_for(50ms);
 
-    auto decel = create_sdo_download(node_id, 0x6084, 0, 1000000, 4);
-    sock.send_message(decel.can_id, decel.data, decel.dlc);
+    auto decel_msg = create_sdo_download(node_id, 0x6084, 0, accel, 4);
+    sock.send_message(decel_msg.can_id, decel_msg.data, decel_msg.dlc);
     std::this_thread::sleep_for(50ms);
 
     auto shutdown = create_sdo_download(
@@ -91,15 +96,18 @@ struct Args {
     std::string log_path;  // empty => auto-named timestamped file
     bool enable_left = true;
     bool enable_right = true;
+    int32_t accel = 10000000;  // 0x6083/0x6084 written at init; matches the app default
 };
 
-std::string default_log_name() {
+// Velocity is always 0 in this tool, so only the accel config is embedded:
+// <timestamp>_zero_a<accel>_log.csv
+std::string default_log_name(int32_t accel) {
     const auto now = std::chrono::system_clock::now();
     const std::time_t t = std::chrono::system_clock::to_time_t(now);
     std::tm tm{};
     localtime_r(&t, &tm);
     std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y%m%d_%H%M%S") << "_zero_velocity_log.csv";
+    oss << std::put_time(&tm, "%Y%m%d_%H%M%S") << "_zero_a" << accel << "_log.csv";
     return oss.str();
 }
 
@@ -122,6 +130,8 @@ Args parse_args(int argc, char** argv) {
             a.right_node = std::stoi(next("--right"));
         } else if (k == "--rate-hz") {
             a.rate_hz = std::stod(next("--rate-hz"));
+        } else if (k == "--accel") {
+            a.accel = static_cast<int32_t>(std::stol(next("--accel")));
         } else if (k == "--log") {
             a.log_path = next("--log");
         } else if (k == "--side") {
@@ -144,7 +154,7 @@ Args parse_args(int argc, char** argv) {
             std::cout << "Usage: " << argv[0]
                       << " [--iface can0] [--left 127] [--right 126]"
                          " [--rate-hz 100] [--log path.csv]"
-                         " [--side both|left|right]\n";
+                         " [--side both|left|right] [--accel 10000000]\n";
             std::exit(0);
         } else {
             std::cerr << "unknown arg: " << k << '\n';
@@ -160,7 +170,7 @@ Args parse_args(int argc, char** argv) {
         std::exit(2);
     }
     if (a.log_path.empty()) {
-        a.log_path = default_log_name();
+        a.log_path = default_log_name(a.accel);
     }
     return a;
 }
@@ -179,6 +189,7 @@ int main(int argc, char** argv) {
               << " left=" << (args.enable_left ? std::to_string(args.left_node) : std::string("off"))
               << " right=" << (args.enable_right ? std::to_string(args.right_node) : std::string("off"))
               << " rate=" << args.rate_hz << " Hz"
+              << " accel=" << args.accel
               << " log=" << args.log_path << '\n';
 
     std::ofstream log(args.log_path);
@@ -195,7 +206,7 @@ int main(int argc, char** argv) {
     bool right_ok = args.enable_right;
     if (left_ok) {
         try {
-            initialize_elmo(sock, args.left_node);
+            initialize_elmo(sock, args.left_node, args.accel);
         } catch (const std::exception& e) {
             std::cerr << "[zero-vel] left init failed: " << e.what() << '\n';
             left_ok = false;
@@ -203,7 +214,7 @@ int main(int argc, char** argv) {
     }
     if (right_ok) {
         try {
-            initialize_elmo(sock, args.right_node);
+            initialize_elmo(sock, args.right_node, args.accel);
         } catch (const std::exception& e) {
             std::cerr << "[zero-vel] right init failed: " << e.what() << '\n';
             right_ok = false;

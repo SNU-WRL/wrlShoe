@@ -33,13 +33,16 @@ void signal_handler(int signal_number) {
 
 int main(int argc, char* argv[]) {
     std::string config_path;
-    std::ostringstream default_log_name;
+    std::ostringstream ts_stream;
     const auto now_sys = std::chrono::system_clock::now();
     const std::time_t now_t = std::chrono::system_clock::to_time_t(now_sys);
     std::tm tm_now{};
     localtime_r(&now_t, &tm_now);
-    default_log_name << std::put_time(&tm_now, "%Y%m%d_%H%M%S") << "_slip_log.csv";
-    std::string log_path = default_log_name.str();
+    ts_stream << std::put_time(&tm_now, "%Y%m%d_%H%M%S");
+    const std::string timestamp = ts_stream.str();
+    // Empty => auto-named after config load as
+    // <timestamp>_slip_v<slip_velocity>_a<slip_profile_acceleration>_log.csv
+    std::string log_path;
 
     const char* default_paths[] = {
         "config/motorized_shoe_params.yaml",
@@ -73,6 +76,13 @@ int main(int argc, char* argv[]) {
         }
 
         const motorized_shoe::Config cfg = motorized_shoe::load_config(config_path);
+
+        if (log_path.empty()) {
+            std::ostringstream name;
+            name << timestamp << "_slip_v" << cfg.slip.slip_velocity
+                 << "_a" << cfg.slip.slip_profile_acceleration << "_log.csv";
+            log_path = name.str();
+        }
 
         motorized_shoe::DataBus bus;
         motorized_shoe::DataLogger logger(log_path);
@@ -115,9 +125,9 @@ int main(int argc, char* argv[]) {
                   << " velocity=" << cfg.slip.slip_velocity
                   << " duration=" << cfg.slip.slip_duration_ms << "ms"
                   << " hs_delay=" << cfg.slip.mode1_delay_after_hs_ms << "ms"
-                  << " mst_delay=" << cfg.slip.mode2_delay_after_mst_ms << "ms\n";
+                  << " to_slip_lead=" << cfg.slip.to_slip_lead_ms << "ms\n";
         std::cout << "Keys: '" << cfg.slip.mode1_key << "' = slip after HS, '"
-                  << cfg.slip.mode2_key << "' = slip after MSt (before TO),"
+                  << cfg.slip.mode2_key << "' = slip before predicted TO,"
                   << " 's' = stop motors, 'r' = resume, 'q' = quit\n";
         std::cout.flush();
 

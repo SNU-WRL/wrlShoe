@@ -1,5 +1,6 @@
 #include "motorized_shoe/send_can_command_to_elmo_node.hpp"
 
+#include <chrono>
 #include <iostream>
 #include <thread>
 
@@ -390,6 +391,150 @@ void SendCanCommandToElmoNode::set_slip_profile_acceleration(int32_t accel) {
     slip_profile_acceleration_.store(accel, std::memory_order_release);
 }
 
+bool SendCanCommandToElmoNode::write_sdo_confirmed(int node_id, uint16_t index, uint8_t subindex,
+                                                   uint32_t value, int length, const char* what) {
+    using namespace std::chrono_literals;
+    const uint32_t expect_id = encode_canopen_sdo_rx_id(static_cast<uint32_t>(node_id));
+
+    // Two attempts: the drive has been observed to silently abort a write under
+    // tight SDO timing, and a single retry after a short settle usually lands it.
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+        auto msg = create_sdo_download(node_id, index, subindex, value, length);
+        can_socket_->send_message(msg.can_id, msg.data, msg.dlc);
+
+        const auto deadline = std::chrono::steady_clock::now() + 100ms;
+        bool got_response = false;
+        bool accepted = false;
+        uint32_t abort_code = 0;
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto rem = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 deadline - std::chrono::steady_clock::now())
+                                 .count();
+            if (rem <= 0) {
+                break;
+            }
+            uint32_t rx_id = 0;
+            uint8_t d[8] = {0};
+            size_t len = 0;
+            bool ok = false;
+            try {
+                ok = can_socket_->recv_message(rx_id, d, len, static_cast<int>(rem));
+            } catch (const std::exception& e) {
+                std::cerr << "[send_can_command_to_elmo] node " << node_id
+                          << " SDO confirm recv error: " << e.what() << '\n';
+                break;
+            }
+            if (!ok) {
+                break;  // poll timeout: no frame arrived
+            }
+            // Only the matching node's SDO server response for THIS object counts;
+            // skip TPDOs, other nodes' responses, and responses for other objects.
+            if (rx_id != expect_id || len < 4) {
+                continue;
+            }
+            const uint16_t resp_index = static_cast<uint16_t>(d[1] | (d[2] << 8));
+            if (resp_index != index || d[3] != subindex) {
+                continue;
+            }
+            got_response = true;
+            if (d[0] == 0x60) {
+                accepted = true;
+            } else if (d[0] == 0x80) {
+                abort_code = static_cast<uint32_t>(d[4]) |
+                             (static_cast<uint32_t>(d[5]) << 8) |
+                             (static_cast<uint32_t>(d[6]) << 16) |
+                             (static_cast<uint32_t>(d[7]) << 24);
+            }
+            break;
+        }
+
+        if (accepted) {
+            if (attempt > 1) {
+                std::cerr << "[send_can_command_to_elmo] node " << node_id << " SDO " << what
+                          << " confirmed on retry " << attempt << '\n';
+            }
+            return true;
+        }
+
+        const bool last = (attempt == 2);
+        if (got_response) {
+            std::cerr << "[send_can_command_to_elmo] node " << node_id << " SDO " << what
+                      << " (0x" << std::hex << index << ":" << std::dec
+                      << static_cast<int>(subindex) << " = " << value << ") ABORTED, code 0x"
+                      << std::hex << abort_code << std::dec << (last ? "" : "; retrying") << '\n';
+        } else {
+            std::cerr << "[send_can_command_to_elmo] node " << node_id << " SDO " << what
+                      << " (0x" << std::hex << index << std::dec << " = " << value
+                      << ") got NO response" << (last ? "" : "; retrying") << '\n';
+        }
+        if (!last) {
+            std::this_thread::sleep_for(20ms);
+        }
+    }
+
+    std::cerr << "[send_can_command_to_elmo] node " << node_id << " SDO " << what
+              << " NOT confirmed after retries -- drive is likely using its stored value\n";
+    return false;
+}
+
+bool SendCanCommandToElmoNode::read_sdo_u32(int node_id, uint16_t index, uint8_t subindex,
+                                            uint32_t& out, const char* what) {
+    using namespace std::chrono_literals;
+    const uint32_t expect_id = encode_canopen_sdo_rx_id(static_cast<uint32_t>(node_id));
+
+    auto req = create_sdo_upload(static_cast<uint32_t>(node_id), index, subindex);
+    can_socket_->send_message(req.can_id, req.data, req.dlc);
+
+    const auto deadline = std::chrono::steady_clock::now() + 100ms;
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto rem = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             deadline - std::chrono::steady_clock::now())
+                             .count();
+        if (rem <= 0) {
+            break;
+        }
+        uint32_t rx_id = 0;
+        uint8_t d[8] = {0};
+        size_t len = 0;
+        bool ok = false;
+        try {
+            ok = can_socket_->recv_message(rx_id, d, len, static_cast<int>(rem));
+        } catch (const std::exception& e) {
+            std::cerr << "[send_can_command_to_elmo] node " << node_id << " SDO read " << what
+                      << " recv error: " << e.what() << '\n';
+            break;
+        }
+        if (!ok) {
+            break;
+        }
+        if (rx_id != expect_id || len < 4) {
+            continue;
+        }
+        const uint16_t resp_index = static_cast<uint16_t>(d[1] | (d[2] << 8));
+        if (resp_index != index || d[3] != subindex) {
+            continue;
+        }
+        if (d[0] == 0x80) {
+            const uint32_t abort_code = static_cast<uint32_t>(d[4]) |
+                                        (static_cast<uint32_t>(d[5]) << 8) |
+                                        (static_cast<uint32_t>(d[6]) << 16) |
+                                        (static_cast<uint32_t>(d[7]) << 24);
+            std::cerr << "[send_can_command_to_elmo] node " << node_id << " SDO read " << what
+                      << " ABORTED, code 0x" << std::hex << abort_code << std::dec << '\n';
+            return false;
+        }
+        if ((d[0] & 0xE0) == 0x40) {  // upload (read) response
+            out = static_cast<uint32_t>(d[4]) | (static_cast<uint32_t>(d[5]) << 8) |
+                  (static_cast<uint32_t>(d[6]) << 16) | (static_cast<uint32_t>(d[7]) << 24);
+            return true;
+        }
+        return false;
+    }
+    std::cerr << "[send_can_command_to_elmo] node " << node_id << " SDO read " << what
+              << " got NO response within timeout\n";
+    return false;
+}
+
 void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configure_pdos) {
     using namespace std::chrono_literals;
 
@@ -413,8 +558,10 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configur
     can_socket_->send_message(fault_reset.can_id, fault_reset.data, fault_reset.dlc);
     std::this_thread::sleep_for(50ms);
 
-    auto mode = create_sdo_download(node_id, CANOPEN_MODE_OF_OPERATION, 0, 3, 1);
-    can_socket_->send_message(mode.can_id, mode.data, mode.dlc);
+    // Mode of operation = 3 (Profile Velocity). Confirmed: if this is not applied
+    // the drive is not in pv mode and 0x6083 profile acceleration is ignored,
+    // which is exactly the failure that makes the slip ramp default to 1e6.
+    write_sdo_confirmed(node_id, CANOPEN_MODE_OF_OPERATION, 0, 3, 1, "mode-of-operation=pv");
     std::this_thread::sleep_for(50ms);
 
     // Profile acceleration / deceleration. The base values come from config
@@ -439,13 +586,32 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configur
     const uint32_t decel_value =
         slip_override ? static_cast<uint32_t>(slip_accel) : static_cast<uint32_t>(profile_deceleration_);
 
-    auto accel = create_sdo_download(node_id, 0x6083, 0, accel_value, 4);
-    can_socket_->send_message(accel.can_id, accel.data, accel.dlc);
+    // Confirmed so a silently-dropped accel/decel write (the drive keeping its
+    // stored value, e.g. 1e6) is logged instead of leaving the ramp a mystery.
+    write_sdo_confirmed(node_id, 0x6083, 0, accel_value, 4, "profile-acceleration");
     std::this_thread::sleep_for(50ms);
 
-    auto decel = create_sdo_download(node_id, 0x6084, 0, decel_value, 4);
-    can_socket_->send_message(decel.can_id, decel.data, decel.dlc);
+    write_sdo_confirmed(node_id, 0x6084, 0, decel_value, 4, "profile-deceleration");
     std::this_thread::sleep_for(50ms);
+
+    // Read back what the drive actually stored. This is the definitive check --
+    // no motion, no slip needed: launch the app and read this line. If the
+    // value differs from what was written, the drive clamped/ignored the write
+    // (that's the mystery 1e6). accel==decel is expected in slip mode.
+    uint32_t rb_accel = 0;
+    uint32_t rb_decel = 0;
+    const bool got_a = read_sdo_u32(node_id, 0x6083, 0, rb_accel, "profile-acceleration");
+    const bool got_d = read_sdo_u32(node_id, 0x6084, 0, rb_decel, "profile-deceleration");
+    if (got_a && got_d) {
+        std::cout << "[send_can_command_to_elmo] node " << node_id
+                  << " profile accel/decel readback: 0x6083=" << rb_accel
+                  << " 0x6084=" << rb_decel << " (wrote " << accel_value << "/" << decel_value
+                  << ")" << ((rb_accel == accel_value && rb_decel == decel_value)
+                                 ? " OK"
+                                 : " MISMATCH -- drive did not store the commanded value")
+                  << '\n';
+        std::cout.flush();
+    }
 
     auto shutdown = create_sdo_download(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SHUTDOWN_STATE, 2);
     can_socket_->send_message(shutdown.can_id, shutdown.data, shutdown.dlc);

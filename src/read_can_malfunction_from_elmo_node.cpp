@@ -75,8 +75,15 @@ void ReadCanMalfunctionFromElmoNode::process_sdo_response(uint32_t node_id, cons
     const uint16_t index = static_cast<uint16_t>(data[1] | (data[2] << 8));
     const uint8_t subindex = data[3];
 
-    if (index == CANOPEN_STATUS_WORD && subindex == 0 && len >= 8) {
-        if (cmd == 0x60 || cmd == 0x43) {
+    if (index == CANOPEN_STATUS_WORD && subindex == 0 && len >= 6) {
+        // Statusword (0x6041) is a 2-byte object, so the drive answers the SDO
+        // upload with an expedited upload response whose command byte is 0x4B.
+        // The SCS for ANY upload response is 010b, i.e. (cmd & 0xE0) == 0x40
+        // (covers 0x43/0x47/0x4B/0x4F). The old check only accepted 0x43 (a
+        // 4-byte upload) and 0x60 (a download/write ack) -- neither matches the
+        // 2-byte 0x4B reply, so the statusword silently logged 0 forever and
+        // fault/Operation-Enabled state was invisible.
+        if ((cmd & 0xE0) == 0x40) {
             const uint16_t status_word = static_cast<uint16_t>(data[4] | (data[5] << 8));
             publish_status(node_id, status_word);
         }

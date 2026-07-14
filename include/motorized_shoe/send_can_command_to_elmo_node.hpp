@@ -59,6 +59,19 @@ private:
     // fault-recovery / re-enable paths pass false to avoid re-doing the slow
     // ~260 ms PDO config and lengthening the control-loop stall).
     void initialize_elmo_driver(int node_id, bool configure_pdos = true);
+    // Send an SDO download and read back the drive's response on 0x580+node_id,
+    // matching the object index/subindex. Logs (and retries once) on an SDO
+    // abort or missing response so a silently-dropped write -- e.g. profile
+    // acceleration not taking effect -- is visible instead of mysterious.
+    // Returns true only if the drive confirmed the write (0x60 response).
+    bool write_sdo_confirmed(int node_id, uint16_t index, uint8_t subindex, uint32_t value,
+                             int length, const char* what);
+    // Expedited SDO upload (read) of a <=32-bit object into `out`. Returns true
+    // only if the drive replied with a valid upload response (not an abort /
+    // timeout). Used at init to read back what the drive actually stored, so a
+    // write that was "accepted" but clamped/ignored is still caught.
+    bool read_sdo_u32(int node_id, uint16_t index, uint8_t subindex, uint32_t& out,
+                      const char* what);
     void configure_pdo_mapping(int node_id);
     void send_velocity_command(int node_id, int32_t velocity);
     void stop_and_reset_elmo(int node_id, const std::string& foot);

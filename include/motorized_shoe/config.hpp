@@ -19,9 +19,15 @@ struct SlipConfig {
     std::string foot = "Right";          // "Left" or "Right"
     int32_t slip_velocity = 100000;       // counts/sec sent to ELMO during slip
     int slip_duration_ms = 150;           // how long the slip lasts
-    int mode1_delay_after_hs_ms = 100;    // mode 1: slip starts this long after HS
-    int mode2_delay_after_mst_ms = 200;   // mode 2: slip starts this long after MSt entry
-                                          // (MSt -> TO is ~200-450 ms; tune to land just before TO)
+    int mode1_delay_after_hs_ms = 100;    // mode 1 (AfterHS): slip starts this long after HS
+    // Mode 2 (BeforeTO) is now a PREDICTED, HS-anchored trigger: on the next HS
+    // it schedules the slip to fire at t_HS + max(0, stance_est - to_slip_lead_ms),
+    // landing the -velocity burst just before the predicted toe-off.
+    int to_slip_lead_ms = 50;             // forward-slip lead before predicted TO
+    int stance_est_window = 4;            // cycles averaged into the stance estimate
+    int mode2_delay_after_mst_ms = 200;   // DEPRECATED: superseded by to_slip_lead_ms.
+                                          // Still parsed (kept for config compatibility)
+                                          // but no longer used by the slip node.
     // Profile acceleration / deceleration (counts/sec^2) written to the drive
     // when slip mode is active. The init sequence sets 1e6 by default, which
     // gives a ~150 ms ramp for a 150k slip — most of a short slip burst would
@@ -32,22 +38,24 @@ struct SlipConfig {
 };
 
 struct GaitThresholds {
-    // Gyro thresholds (rad/s): converted from deg/s
-    // -80 deg/s = -1.3963 rad/s, -30 deg/s = -0.5236 rad/s, -200 deg/s = -3.4907 rad/s
+    // Gyro negative-peak thresholds (rad/s), the only two the two-state FSM uses:
+    // -80 deg/s = -1.3963 rad/s, -200 deg/s = -3.4907 rad/s
     float hs_threshold = -1.3963f;  // Heel Strike: gyro_z negative-peak threshold (was -80 deg/s)
-    float ts_threshold = -0.5236f;  // Toe Strike: gyro_z up-cross threshold (was -30 deg/s)
-    float ho_threshold = -0.15f;    // Heel Off: gyro_z down-cross threshold
     float to_threshold = -3.4907f;  // Toe Off: gyro_z negative-peak threshold (was -200 deg/s)
-    // Into-swing gyro threshold (rad/s). Original used +50 deg/s = 0.873 rad/s on
-    // the forward (positive) gyro_z swing, NOT an accel magnitude.
-    float swing_gyro_threshold = 0.8727f;
-    // Midstance "quiet" threshold on the GRAVITY-FREE accel norm (m/s^2). The old
-    // value of 12 was inflated only because the raw accel still carried gravity;
-    // on free acceleration the foot is near-zero at rest, so 3 is correct.
-    float midstance_threshold = 3.0f;
     // Minimum dwell in Swing before a heel strike may fire, so the HS peak
     // detector can't latch onto an early-swing gyro dip.
     int min_swing_dwell_ms = 150;
+    // Optional HS accept gate: require a RAW |accel| impact spike during the swing
+    // dwell before accepting a heel strike. Default off.
+    bool hs_accel_veto = false;
+    float hs_impact_threshold = 20.0f;  // m/s^2 on the RAW accel norm
+
+    // DEPRECATED thresholds from the old six-state FSM. Kept as parseable fields
+    // (config compatibility) but no longer consumed by the FSM.
+    float ts_threshold = -0.5236f;       // was Toe-Strike up-cross
+    float ho_threshold = -0.15f;         // was Heel-Off down-cross
+    float swing_gyro_threshold = 0.8727f;  // was into-swing forward gyro
+    float midstance_threshold = 3.0f;    // was midstance accel-quiet gate
 };
 
 struct Config {
@@ -72,6 +80,11 @@ struct Config {
     bool gait_use_both_feet = false;
     GaitThresholds gait_thresholds;
 
+    // Per-state FSM resync timeout (ms). If a state dwells longer than
+    // max(this, ~1.5x recent cycle period) with no event, the peak detectors and
+    // cycle clocks reset so a single missed gyro peak cannot stall the machine.
+    int gait_state_timeout_ms = 2000;
+
     // Length (samples) of the moving-average filter applied to gyro_z and the
     // free-accel norm feeding the FSM. The original used int(fs*0.05) = 6 at
     // 120 Hz. The filter's group delay of (window-1)/2 samples is compensated
@@ -82,8 +95,10 @@ struct Config {
     // produce free acceleration. ~0.5 s at 120 Hz.
     int gravity_calib_samples = 60;
 
+    // Gait-phase velocity map for the normal-gait app. The two-state FSM emits
+    // only "Stance" and "Swing" as continuous phases, so the map keys on those.
     std::unordered_map<std::string, int32_t> velocity_map{
-        {"MSt", 0}, {"HO", 0}, {"TSt", 0}, {"TO", 50000}, {"Swing", 200000}, {"HS", 0}};
+        {"Stance", 0}, {"Swing", 200000}};
 
     SlipConfig slip;
 
