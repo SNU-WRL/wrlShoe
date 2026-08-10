@@ -72,6 +72,12 @@ private:
     // write that was "accepted" but clamped/ignored is still caught.
     bool read_sdo_u32(int node_id, uint16_t index, uint8_t subindex, uint32_t& out,
                       const char* what);
+    // Elmo native-interpreter command via OS-command object 0x1023 (see
+    // canopen_utils.hpp). Retries once, since a concurrently-arriving SDO
+    // request (e.g. the statusword poll) can abort a segmented 0x1023 transfer
+    // on the drive side. Logs on failure; fills `reply` on success.
+    bool run_elmo_os_command(int node_id, const std::string& command,
+                             std::string* reply = nullptr);
     void configure_pdo_mapping(int node_id);
     void send_velocity_command(int node_id, int32_t velocity);
     void stop_and_reset_elmo(int node_id, const std::string& foot);
@@ -84,8 +90,11 @@ private:
 
     int left_node_id_;
     int right_node_id_;
-    // Base ELMO profile accel/decel (0x6083 / 0x6084) from config, written at
-    // init unless overridden by the slip fast-ramp (slip_profile_acceleration_).
+    // Base ELMO profile accel/decel from config, applied at init unless
+    // overridden by the slip fast-ramp (slip_profile_acceleration_). Written
+    // to DS402 0x6083/0x6084 and native AC/DC for consistency, and -- the
+    // write that actually changes the ramp -- to the native SD param via the
+    // 0x1023 OS command (see canopen_utils.hpp).
     int32_t profile_acceleration_;
     int32_t profile_deceleration_;
     std::unordered_map<std::string, int32_t> velocity_map_;

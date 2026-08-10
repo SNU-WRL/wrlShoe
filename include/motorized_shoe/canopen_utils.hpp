@@ -3,6 +3,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+
+#include "motorized_shoe/can_utils.hpp"
 
 namespace motorized_shoe {
 
@@ -80,6 +83,42 @@ CANopenMessage create_nmt_message(uint32_t node_id, uint8_t command);
 
 // SYNC frame: COB-ID 0x80, zero data bytes.
 CANopenMessage create_sync_message();
+
+// Elmo native-interpreter access via the CiA-301 OS-command object (0x1023).
+//
+// The drive's trajectory generator ramps with the native SD ("stop
+// deceleration") parameter, NOT with the DS402 profile accel/decel objects and
+// NOT with native AC/DC. Verified on hardware (2026-07-16, node 127, UM=5,
+// CANopen Profile Velocity): with 0x6083/0x6084 = 1e7 confirmed written AND
+// AC = 5e6..1e7 read back correctly, the velocity-demand slope stayed at
+// exactly 1e6 (SD's flash default) in both directions; setting `SD=5000000`
+// through 0x1023 immediately moved the measured ramp to ~5e6. SD governs both
+// the accel and decel side of the PV profile. AC/DC/0x6083/0x6084 are stored
+// and read back faithfully but never reach the trajectory generator in this
+// unit mode, so a readback of those objects proves nothing about the ramp.
+// SD set this way is volatile (a power cycle restores the flash value, 1e6 on
+// our drives), so it must be re-written on every init.
+//
+// Protocol: write the ASCII command to 0x1023:01, poll the status byte at
+// 0x1023:02 until it leaves 0xFF (executing), then read the ASCII reply from
+// 0x1023:03. Commands and replies longer than 4 bytes use segmented SDO
+// transfers. Frames on 0x580+node that belong to other exchanges (e.g. the
+// statusword poll) are skipped; if such a request aborts our in-progress
+// segmented transfer on the drive side, the exchange fails and the caller
+// should retry.
+#define CANOPEN_OS_COMMAND 0x1023
+
+struct ElmoOsCommandResult {
+    bool ok = false;        // exchange completed and the drive reported success
+    uint8_t status = 0xFF;  // 0/1 = OK (no reply / reply), 2/3 = command error
+    std::string reply;      // ASCII reply, trailing NULs/';' stripped
+    std::string error;      // failure description when !ok
+};
+
+// Runs one full OS-command exchange (single attempt, no internal retry).
+// recv_timeout_ms bounds each individual SDO response wait.
+ElmoOsCommandResult elmo_os_command(CANSocket& sock, int node_id, const std::string& command,
+                                    int recv_timeout_ms = 100);
 
 }  // namespace motorized_shoe
 

@@ -54,15 +54,25 @@ void initialize_elmo(CANSocket& sock, int node_id, int32_t accel_value) {
     sock.send_message(fault_reset.can_id, fault_reset.data, fault_reset.dlc);
     std::this_thread::sleep_for(50ms);
 
+    // Force the motor off before touching the profiler params: the native
+    // AC/DC writes below are rejected while the motor is on, and a previous
+    // session can leave the drive in Operation Enabled.
+    auto shutdown = create_sdo_download(
+        node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SHUTDOWN_STATE, 2);
+    sock.send_message(shutdown.can_id, shutdown.data, shutdown.dlc);
+    std::this_thread::sleep_for(50ms);
+
     // Mode of operation = 3 (Profile Velocity Mode)
     auto mode = create_sdo_download(node_id, CANOPEN_MODE_OF_OPERATION, 0, 3, 1);
     sock.send_message(mode.can_id, mode.data, mode.dlc);
     std::this_thread::sleep_for(50ms);
 
-    // Profile accel/decel. Was hardcoded to 1e6, which silently knocked the
-    // drive's ramp back to 1e6 whenever this tool ran between slip sessions.
-    // Now sourced from --accel (default matches the app's 1e7) so it can't
-    // reset the drive behind the main app's back.
+    // Profile accel/decel, sourced from --accel (default matches the app's
+    // 1e7) so this tool can't reset the drive behind the main app's back.
+    // The DS402 0x6083/0x6084 and native AC/DC writes are stored by the drive
+    // but do NOT reach the trajectory generator; the native SD write via the
+    // 0x1023 OS command below is what actually sets the ramp (see
+    // canopen_utils.hpp).
     const uint32_t accel = static_cast<uint32_t>(accel_value);
     auto accel_msg = create_sdo_download(node_id, 0x6083, 0, accel, 4);
     sock.send_message(accel_msg.can_id, accel_msg.data, accel_msg.dlc);
@@ -72,10 +82,22 @@ void initialize_elmo(CANSocket& sock, int node_id, int32_t accel_value) {
     sock.send_message(decel_msg.can_id, decel_msg.data, decel_msg.dlc);
     std::this_thread::sleep_for(50ms);
 
-    auto shutdown = create_sdo_download(
-        node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SHUTDOWN_STATE, 2);
-    sock.send_message(shutdown.can_id, shutdown.data, shutdown.dlc);
-    std::this_thread::sleep_for(50ms);
+    for (const std::string& cmd : {"AC=" + std::to_string(accel_value),
+                                   "DC=" + std::to_string(accel_value),
+                                   "SD=" + std::to_string(accel_value)}) {
+        bool ok = false;
+        for (int attempt = 1; attempt <= 2 && !ok; ++attempt) {
+            const auto res = elmo_os_command(sock, node_id, cmd);
+            ok = res.ok;
+            if (!res.ok) {
+                std::cerr << "[zero_vel] node " << node_id << " OS command '" << cmd
+                          << "' failed: " << res.error
+                          << (attempt == 1 ? "; retrying" : "") << '\n';
+                std::this_thread::sleep_for(20ms);
+            }
+        }
+        std::this_thread::sleep_for(50ms);
+    }
 
     auto switch_on = create_sdo_download(
         node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SWITCH_ON_STATE, 2);

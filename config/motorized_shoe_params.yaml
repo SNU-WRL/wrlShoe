@@ -25,7 +25,12 @@ loop_frequency: 1000
 
 # Gait Detection Configuration
 gait_detection:
-  sampling_frequency: 120.0
+  # Rate at which the gait FSM is stepped = the IMU message rate (~100 Hz), NOT
+  # the 1 kHz control loop: the gait node only calls the FSM on a new IMU
+  # msg_count. This value converts all ms-based FSM windows (min_swing_dwell_ms,
+  # state_timeout_ms, MA group delay) into sample counts, so a wrong value
+  # scales every one of those windows.
+  sampling_frequency: 100.0
   use_both_feet: false
 
   # Velocity commands per continuous gait phase (counts/sec). The two-state FSM
@@ -45,13 +50,19 @@ gait_detection:
   # and the swing dwell gate.
   thresholds:
     hs_threshold: -1.3963       # heel-strike gyro_z negative peak
-    to_threshold: -3.4907       # toe-off gyro_z negative peak
+    to_threshold: -2.0944       # toe-off gyro_z negative peak
     # Minimum dwell in Swing before a heel strike may fire, so the HS negative-peak
     # detector cannot latch onto an early-swing gyro dip.
-    min_swing_dwell_ms: 220
+    min_swing_dwell_ms: 330
     # Optional HS accept gate: require a RAW |accel| impact spike (m/s^2) during the
-    # swing dwell before accepting a heel strike. Uses raw accel (impact ~30-40
-    # m/s^2), NOT gravity-removed free accel. Default off.
+    # swing dwell before accepting a heel strike. Uses raw accel, NOT gravity-removed
+    # free accel. KEEP OFF with this hardware: across the Jul 8 + Jul 13 logs (~55
+    # heel strikes, both feet) real-HS impacts run 10-19 m/s^2 (only ~20% reach 20)
+    # while mid-swing shake peaks hit 20-44, often exceeding the HS impact itself --
+    # no threshold separates them, so the veto blocks real heel strikes and/or gets
+    # pre-armed by swing shake. (Context: a mid-swing gyro dip in the 20260708_162943
+    # log fired a false HS -> slip mid-swing; that dip is deeper than the true HS
+    # trough on the filtered gyro, so hs_threshold tuning can't fix it either.)
     hs_accel_veto: false
     hs_impact_threshold: 20.0
     # DEPRECATED (six-state FSM): parsed for compatibility but unused.
@@ -62,7 +73,7 @@ gait_detection:
 
   # Moving-average window (samples) on gyro_z feeding the FSM. The (window-1)/2-
   # sample group delay is compensated for in back-dated event timestamps.
-  ma_window: 6
+  ma_window: 5
   # DEPRECATED: gravity estimation is no longer on the FSM path (the gyro-only
   # two-state machine doesn't use free acceleration). Parsed but unused.
   gravity_calib_samples: 60
@@ -79,8 +90,8 @@ elmo_config:
   sdo_tx_offset: 0x600
   sdo_timeout: 300
   can_write_timeout: 100
-  profile_acceleration: 10000000
-  profile_deceleration: 10000000
+  profile_acceleration: 1000000
+  profile_deceleration: 1000000
 
 # Slip Perturbation (used by motorized_shoe_slip_app)
 # Two modes selectable from keyboard, both one-shot per keypress:
@@ -94,13 +105,13 @@ elmo_config:
 slip_perturbation:
   enabled: true
   foot: "Right"
-  slip_velocity: 200000
+  slip_velocity: 150000
   slip_duration_ms: 500
   mode1_delay_after_hs_ms: 0
   # Forward-slip lead before the predicted toe-off (ms).
   to_slip_lead_ms: 50
   # Number of recent cycles averaged into the stance estimate.
-  stance_est_window: 4
+  stance_est_window: 2
   # DEPRECATED: superseded by to_slip_lead_ms. Parsed but unused.
   mode2_delay_after_mst_ms: 200
   # Drive profile acceleration/deceleration in slip mode (counts/sec^2).

@@ -1,6 +1,7 @@
 #include "motorized_shoe/send_can_command_to_elmo_node.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <thread>
 
@@ -535,6 +536,31 @@ bool SendCanCommandToElmoNode::read_sdo_u32(int node_id, uint16_t index, uint8_t
     return false;
 }
 
+bool SendCanCommandToElmoNode::run_elmo_os_command(int node_id, const std::string& command,
+                                                   std::string* reply) {
+    using namespace std::chrono_literals;
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+        const ElmoOsCommandResult res = elmo_os_command(*can_socket_, node_id, command);
+        if (res.ok) {
+            if (reply != nullptr) {
+                *reply = res.reply;
+            }
+            if (attempt > 1) {
+                std::cerr << "[send_can_command_to_elmo] node " << node_id << " OS command '"
+                          << command << "' succeeded on retry " << attempt << '\n';
+            }
+            return true;
+        }
+        const bool last = (attempt == 2);
+        std::cerr << "[send_can_command_to_elmo] node " << node_id << " OS command '" << command
+                  << "' failed: " << res.error << (last ? "" : "; retrying") << '\n';
+        if (!last) {
+            std::this_thread::sleep_for(20ms);
+        }
+    }
+    return false;
+}
+
 void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configure_pdos) {
     using namespace std::chrono_literals;
 
@@ -558,15 +584,21 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configur
     can_socket_->send_message(fault_reset.can_id, fault_reset.data, fault_reset.dlc);
     std::this_thread::sleep_for(50ms);
 
+    // Force the motor off (Shutdown -> Ready to Switch On) BEFORE touching the
+    // profiler parameters: the native AC/DC writes below are rejected while the
+    // motor is on, and a hard-killed previous session can leave the drive in
+    // Operation Enabled through the NMT/fault-reset preamble above.
+    auto shutdown = create_sdo_download(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SHUTDOWN_STATE, 2);
+    can_socket_->send_message(shutdown.can_id, shutdown.data, shutdown.dlc);
+    std::this_thread::sleep_for(50ms);
+
     // Mode of operation = 3 (Profile Velocity). Confirmed: if this is not applied
-    // the drive is not in pv mode and 0x6083 profile acceleration is ignored,
-    // which is exactly the failure that makes the slip ramp default to 1e6.
+    // the drive is not in pv mode and velocity commands are not profiled at all.
     write_sdo_confirmed(node_id, CANOPEN_MODE_OF_OPERATION, 0, 3, 1, "mode-of-operation=pv");
     std::this_thread::sleep_for(50ms);
 
     // Profile acceleration / deceleration. The base values come from config
-    // (profile_acceleration_ / profile_deceleration_) and are written
-    // independently to 0x6083 and 0x6084, so accel and decel can differ.
+    // (profile_acceleration_ / profile_deceleration_) and can differ.
     // Slip mode wants a fast symmetric ramp so the motor reaches the commanded
     // slip velocity before the burst ends; when slip_profile_acceleration_ > 0
     // it overrides BOTH accel and decel. The override is consulted here (with
@@ -586,36 +618,60 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configur
     const uint32_t decel_value =
         slip_override ? static_cast<uint32_t>(slip_accel) : static_cast<uint32_t>(profile_deceleration_);
 
-    // Confirmed so a silently-dropped accel/decel write (the drive keeping its
-    // stored value, e.g. 1e6) is logged instead of leaving the ramp a mystery.
+    // DS402 profile accel/decel. On these drives this write is stored and reads
+    // back correctly but does NOT reach the trajectory generator (the mystery
+    // 1e6 ramp -- see canopen_utils.hpp). Kept so the DS402 objects stay
+    // consistent with what we actually configure below.
     write_sdo_confirmed(node_id, 0x6083, 0, accel_value, 4, "profile-acceleration");
     std::this_thread::sleep_for(50ms);
 
     write_sdo_confirmed(node_id, 0x6084, 0, decel_value, 4, "profile-deceleration");
     std::this_thread::sleep_for(50ms);
 
-    // Read back what the drive actually stored. This is the definitive check --
-    // no motion, no slip needed: launch the app and read this line. If the
-    // value differs from what was written, the drive clamped/ignored the write
-    // (that's the mystery 1e6). accel==decel is expected in slip mode.
-    uint32_t rb_accel = 0;
-    uint32_t rb_decel = 0;
-    const bool got_a = read_sdo_u32(node_id, 0x6083, 0, rb_accel, "profile-acceleration");
-    const bool got_d = read_sdo_u32(node_id, 0x6084, 0, rb_decel, "profile-deceleration");
-    if (got_a && got_d) {
+    // Native AC/DC via the 0x1023 OS command. Like 0x6083/0x6084 these are
+    // stored but ignored by the PV trajectory generator in UM=5; written only
+    // to keep every accel-shaped parameter consistent.
+    run_elmo_os_command(node_id, "AC=" + std::to_string(accel_value));
+    std::this_thread::sleep_for(50ms);
+
+    run_elmo_os_command(node_id, "DC=" + std::to_string(decel_value));
+    std::this_thread::sleep_for(50ms);
+
+    // The write that actually changes the ramp: native SD ("stop deceleration")
+    // via the 0x1023 OS command. Measured on hardware 2026-07-16: the PV-mode
+    // demand slope follows SD in BOTH directions and ignores AC/DC/0x6083/
+    // 0x6084 entirely (see canopen_utils.hpp). SD is volatile (power cycle
+    // restores the flash default, 1e6 on our drives), so this must run on
+    // every init, while the motor is off (guaranteed by the Shutdown
+    // controlword above). SD is a single magnitude: it cannot honor an
+    // asymmetric accel/decel pair, so the accel value wins.
+    if (accel_value != decel_value) {
+        std::cerr << "[send_can_command_to_elmo] node " << node_id
+                  << " WARNING: profile accel " << accel_value << " != decel " << decel_value
+                  << "; the drive ramps with a single SD parameter, using accel value\n";
+    }
+    run_elmo_os_command(node_id, "SD=" + std::to_string(accel_value));
+    std::this_thread::sleep_for(50ms);
+
+    // Definitive readback: query the native SD the profiler actually uses.
+    // No motion needed -- launch the app and read this line. (Reading 0x6083
+    // or AC back only proves those shadow values were stored, which they are
+    // even while the real ramp stays at the SD flash default of 1e6.)
+    std::string sd_reply;
+    if (run_elmo_os_command(node_id, "SD", &sd_reply)) {
+        const long long rb_sd = std::strtoll(sd_reply.c_str(), nullptr, 10);
         std::cout << "[send_can_command_to_elmo] node " << node_id
-                  << " profile accel/decel readback: 0x6083=" << rb_accel
-                  << " 0x6084=" << rb_decel << " (wrote " << accel_value << "/" << decel_value
-                  << ")" << ((rb_accel == accel_value && rb_decel == decel_value)
-                                 ? " OK"
-                                 : " MISMATCH -- drive did not store the commanded value")
+                  << " native ramp (SD) readback: SD=" << sd_reply
+                  << " (wrote " << accel_value << ")"
+                  << ((rb_sd == static_cast<long long>(accel_value))
+                          ? " OK"
+                          : " MISMATCH -- drive is not using the commanded ramp")
                   << '\n';
         std::cout.flush();
+    } else {
+        std::cerr << "[send_can_command_to_elmo] node " << node_id
+                  << " SD readback failed -- ramp NOT verified\n";
     }
-
-    auto shutdown = create_sdo_download(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SHUTDOWN_STATE, 2);
-    can_socket_->send_message(shutdown.can_id, shutdown.data, shutdown.dlc);
-    std::this_thread::sleep_for(50ms);
 
     auto switch_on = create_sdo_download(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SWITCH_ON_STATE, 2);
     can_socket_->send_message(switch_on.can_id, switch_on.data, switch_on.dlc);
