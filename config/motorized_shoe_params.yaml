@@ -127,8 +127,28 @@ slip_perturbation:
   mode1_delay_after_hs_ms: 0
   # Forward-slip lead before the predicted toe-off (ms).
   to_slip_lead_ms: 50
-  # Number of recent cycles averaged into the stance estimate.
-  stance_est_window: 2
+  # Stance estimator for the forward (BeforeTO) slip. Prediction = median
+  # stance FRACTION (stance / HS->HS period) over the last stance_est_window
+  # clean cycles, times the period of the cycle that just completed (falls
+  # back to the median absolute stance until a fraction exists). A stance is
+  # "clean" only inside [stance_min_ms, stance_max_ms] with its cycle inside
+  # [cycle_min_ms, cycle_max_ms]; pauses (6-32 s "stances" in the Sep 2026
+  # logs) and false events (90-350 ms) are rejected instead of averaged in.
+  # An HS gap above stance_est_reset_gap_ms, an FSM resync, a drive fault or
+  # an emergency stop reset the estimator; it then needs
+  # stance_est_warmup_cycles clean stances before mode 2 can schedule. A
+  # toe-off detected before the scheduled fire cancels that slip (missed
+  # trial) instead of firing with the foot in the air.
+  # Replay of the Sep 2026 logs picked window 3 / warm-up 1: same accuracy as
+  # the old mean-of-2 on steady walking (median error 30 ms), no seconds-late
+  # or in-swing fires after pauses, fewest skipped cycles after a reset.
+  stance_est_window: 3
+  stance_est_warmup_cycles: 1
+  stance_min_ms: 300
+  stance_max_ms: 1500
+  cycle_min_ms: 600
+  cycle_max_ms: 2000
+  stance_est_reset_gap_ms: 2500
   # DEPRECATED: superseded by to_slip_lead_ms. Parsed but unused.
   mode2_delay_after_mst_ms: 200
   # Drive profile acceleration/deceleration in slip mode (counts/sec^2).

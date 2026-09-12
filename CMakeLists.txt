@@ -52,6 +52,7 @@ add_executable(motorized_shoe_slip_app
   src/send_can_command_to_elmo_node.cpp
   src/read_can_malfunction_from_elmo_node.cpp
   src/slip_perturbation_node.cpp
+  src/stance_estimator.cpp
 )
 
 target_link_libraries(motorized_shoe_slip_app pthread)

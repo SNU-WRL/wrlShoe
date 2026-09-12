@@ -242,6 +242,12 @@ Config load_config(const std::string& path) {
     apply_int(kv, "slip_perturbation.mode1_delay_after_hs_ms", cfg.slip.mode1_delay_after_hs_ms);
     apply_int(kv, "slip_perturbation.to_slip_lead_ms", cfg.slip.to_slip_lead_ms);
     apply_int(kv, "slip_perturbation.stance_est_window", cfg.slip.stance_est_window);
+    apply_int(kv, "slip_perturbation.stance_est_warmup_cycles", cfg.slip.stance_est_warmup_cycles);
+    apply_int(kv, "slip_perturbation.stance_min_ms", cfg.slip.stance_min_ms);
+    apply_int(kv, "slip_perturbation.stance_max_ms", cfg.slip.stance_max_ms);
+    apply_int(kv, "slip_perturbation.cycle_min_ms", cfg.slip.cycle_min_ms);
+    apply_int(kv, "slip_perturbation.cycle_max_ms", cfg.slip.cycle_max_ms);
+    apply_int(kv, "slip_perturbation.stance_est_reset_gap_ms", cfg.slip.stance_est_reset_gap_ms);
     // Deprecated: superseded by to_slip_lead_ms. Parsed but unused.
     apply_int(kv, "slip_perturbation.mode2_delay_after_mst_ms", cfg.slip.mode2_delay_after_mst_ms);
     {

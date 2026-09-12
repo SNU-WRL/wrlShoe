@@ -123,6 +123,13 @@ GaitEventFSM::GaitEvent GaitEventFSM::check_state_transition(float gyro_z, float
         have_last_hs_ = false;
         impact_seen_in_swing_ = false;
         current_state_ = GaitState::Stance;
+        // Published as an explicit "RESET" event (counted like any other
+        // transition) so downstream consumers -- the slip node's stance
+        // estimator, the gait-velocity map -- can drop stale cycle state
+        // instead of silently continuing from a jammed machine.
+        ++detection_count_;
+        event.event_detected = true;
+        event.event_label = "RESET";
         event.state = current_state_;
         event.detection_count = detection_count_;
         return event;
