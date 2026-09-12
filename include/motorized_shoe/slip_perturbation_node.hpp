@@ -10,6 +10,7 @@
 #include "motorized_shoe/config.hpp"
 #include "motorized_shoe/data_bus.hpp"
 #include "motorized_shoe/send_can_command_to_elmo_node.hpp"
+#include "motorized_shoe/stance_estimator.hpp"
 
 namespace motorized_shoe {
 
@@ -61,15 +62,14 @@ private:
     // AfterHS path: fire `delay_ms` after the next `trigger_phase` event.
     void scan_for_trigger_event(const char* trigger_phase, int delay_ms);
 
-    // Stance estimator: runs every tick, consumes new HS/TO events for cfg_.foot.
+    // Stance estimator: runs every tick, consumes new HS/TO/RESET events for
+    // cfg_.foot (see stance_estimator.hpp for the robustness rules).
     void update_stance_estimator();
-    // Current stance estimate (ns): average of the last few measured stance times,
-    // else 0.60 * HS->HS period as a warm-up fallback, else 0 (not warmed yet).
-    int64_t stance_estimate_ns() const;
-    // Schedule the forward (BeforeTO) slip to fire just before the predicted TO,
-    // anchored on the HS at time t_hs_ns. Returns false if stance_est isn't warm
-    // (caller skips one cycle until a measurement exists).
+    // Schedule the forward (BeforeTO) slip to fire just before the predicted
+    // TO, anchored on the HS at time t_hs_ns. Returns false if the estimator
+    // isn't warm (caller skips one cycle until it is).
     bool schedule_before_to(int64_t t_hs_ns);
+    void reset_estimator(const char* reason);
 
     const SlipConfig cfg_;
     DataBus& bus_;
@@ -88,12 +88,10 @@ private:
 
     // --- Stance estimator state (independent of arming) ---
     uint32_t est_cursor_ = 0;          // last event detection_count consumed
-    bool est_pending_hs_ = false;      // an HS awaiting its TO to close a stance
-    int64_t est_pending_hs_ts_ = 0;
-    bool est_have_last_hs_ = false;
-    int64_t est_last_hs_ts_ = 0;       // for the HS->HS period
-    int64_t est_hs_to_hs_ns_ = 0;      // most recent HS->HS period (warm-up fallback)
-    std::deque<int64_t> stance_samples_ns_;  // recent (t_TO - t_HS)
+    StanceEstimator estimator_;
+    bool estimator_had_data_ = false;  // suppress repeated reset messages
+    int64_t before_to_anchor_ts_ = 0;  // HS timestamp the forward slip is anchored on
+    uint32_t skipped_hs_logged_ = 0;   // last HS count reported as "not warm"
 };
 
 }  // namespace motorized_shoe

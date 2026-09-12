@@ -6,9 +6,32 @@
 
 namespace motorized_shoe {
 
+namespace {
+StanceEstimatorConfig estimator_config(const SlipConfig& cfg) {
+    StanceEstimatorConfig e;
+    e.window = cfg.stance_est_window;
+    e.warmup_cycles = cfg.stance_est_warmup_cycles;
+    e.stance_min_ms = cfg.stance_min_ms;
+    e.stance_max_ms = cfg.stance_max_ms;
+    e.cycle_min_ms = cfg.cycle_min_ms;
+    e.cycle_max_ms = cfg.cycle_max_ms;
+    e.reset_gap_ms = cfg.stance_est_reset_gap_ms;
+    return e;
+}
+}  // namespace
+
 SlipPerturbationNode::SlipPerturbationNode(
     const SlipConfig& cfg, DataBus& bus, SendCanCommandToElmoNode& cmd_node)
-    : cfg_(cfg), bus_(bus), cmd_node_(cmd_node) {}
+    : cfg_(cfg), bus_(bus), cmd_node_(cmd_node), estimator_(estimator_config(cfg)) {}
+
+void SlipPerturbationNode::reset_estimator(const char* reason) {
+    if (estimator_had_data_) {
+        std::cerr << "[slip] stance estimator reset (" << reason << "); needs "
+                  << estimator_.warmup_cycles() << " clean cycles before BeforeTO can schedule\n";
+    }
+    estimator_.reset(reason);
+    estimator_had_data_ = false;
+}
 
 void SlipPerturbationNode::request_slip(Mode mode) {
     pending_request_.store(static_cast<int>(mode), std::memory_order_release);
@@ -27,6 +50,7 @@ void SlipPerturbationNode::tick() {
     // state machine back to Idle, and let the command node hold the motors at 0.
     if (cmd_node_.is_emergency_stopped()) {
         pending_request_.store(0, std::memory_order_release);
+        reset_estimator("emergency stop");
         if (state_ != State::Idle) {
             std::cerr << "[slip] aborted: emergency stop active\n";
             state_ = State::Idle;
@@ -65,7 +89,11 @@ void SlipPerturbationNode::tick() {
             detection_count_initialized_ = true;
             current_mode_ = mode;
             state_ = (mode == Mode::AfterHS) ? State::ArmedAfterHS : State::ArmedBeforeTO;
-            std::cout << "[slip] armed mode=" << mode_name << " foot=" << cfg_.foot << '\n';
+            std::cout << "[slip] armed mode=" << mode_name << " foot=" << cfg_.foot;
+            if (mode == Mode::BeforeTO) {
+                std::cout << " (" << estimator_.describe() << ")";
+            }
+            std::cout << '\n';
             std::cout.flush();
         }
     }
@@ -73,6 +101,10 @@ void SlipPerturbationNode::tick() {
     const bool fault_active =
         (cfg_.foot == "Left") ? (s.status_left.valid && s.status_left.fault)
                               : (s.status_right.valid && s.status_right.fault);
+
+    if (fault_active) {
+        reset_estimator("drive fault");
+    }
 
     // Abort on fault during any active phase.
     if (fault_active && state_ != State::Idle) {
@@ -116,18 +148,23 @@ void SlipPerturbationNode::tick() {
                 if (ev.phase != "HS") return;
                 if (schedule_before_to(ev.timestamp_ns)) {
                     before_to_anchor_count_ = ev.detection_count;
+                    before_to_anchor_ts_ = ev.timestamp_ns;
                     state_ = State::DelayingBeforeSlip;
                     scheduled = true;
+                } else if (skipped_hs_logged_ != ev.detection_count) {
+                    skipped_hs_logged_ = ev.detection_count;
+                    std::cout << "[slip] BeforeTO: skipping HS (count=" << ev.detection_count
+                              << "), estimator " << estimator_.describe() << '\n';
+                    std::cout.flush();
                 }
-                // If stance_est isn't warm yet schedule_before_to() returns false;
-                // skip this HS and wait for the next one (the estimator warms after
-                // one completed HS->TO stance).
             });
         if (scheduled) {
-            const int64_t stance_ns = stance_estimate_ns();
+            const int64_t stance_ns = estimator_.predict_stance_ns();
             std::cout << "[slip] BeforeTO HS anchor (count=" << before_to_anchor_count_
-                      << "); stance_est=" << (stance_ns / 1000000) << " ms, lead="
-                      << cfg_.to_slip_lead_ms << " ms -> firing before predicted TO\n";
+                      << "); predicted stance=" << (stance_ns / 1000000) << " ms, lead="
+                      << cfg_.to_slip_lead_ms << " ms -> firing at HS+"
+                      << ((stance_ns / 1000000) - cfg_.to_slip_lead_ms) << " ms ("
+                      << estimator_.describe() << ")\n";
             std::cout.flush();
         }
     }
@@ -135,16 +172,44 @@ void SlipPerturbationNode::tick() {
     // Forward slip reschedule: if a newer HS arrives before we fire (cadence
     // sped up / overshoot), cancel and re-anchor on it rather than firing late.
     if (state_ == State::DelayingBeforeSlip && current_mode_ == Mode::BeforeTO) {
+        bool cancelled = false;
         bus_.for_each_gait_event_since(
             cfg_.foot, before_to_anchor_count_, [&](const GaitPhase& ev) {
+                if (cancelled) return;
+                if (ev.phase == "TO" && ev.timestamp_ns > before_to_anchor_ts_) {
+                    // The real toe-off came before the predicted one: firing
+                    // now would land with the foot already in the air. Abort
+                    // and report it as a missed trial instead.
+                    const auto to_time = std::chrono::steady_clock::time_point(
+                        std::chrono::nanoseconds(ev.timestamp_ns));
+                    const auto early_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                              timer_deadline_ - to_time)
+                                              .count();
+                    std::cerr << "[slip] BeforeTO CANCELLED: toe-off detected " << early_ms
+                              << " ms before the scheduled fire (stance shorter than predicted)"
+                              << " -- missed trial, press '" << cfg_.mode2_key << "' again\n";
+                    cancelled = true;
+                    return;
+                }
+                if (ev.phase == "RESET") {
+                    std::cerr << "[slip] BeforeTO CANCELLED: gait FSM resync\n";
+                    cancelled = true;
+                    return;
+                }
                 if (ev.phase != "HS") return;
                 if (schedule_before_to(ev.timestamp_ns)) {
                     before_to_anchor_count_ = ev.detection_count;
+                    before_to_anchor_ts_ = ev.timestamp_ns;
                     std::cout << "[slip] BeforeTO rescheduled on newer HS (count="
                               << before_to_anchor_count_ << ")\n";
                     std::cout.flush();
                 }
             });
+        if (cancelled) {
+            state_ = State::Idle;
+            current_mode_ = Mode::None;
+            return;
+        }
     }
 
     // Deadline check. Fall through across states so a delay_ms of 0 (or a
@@ -195,54 +260,24 @@ void SlipPerturbationNode::update_stance_estimator() {
     bus_.for_each_gait_event_since(
         cfg_.foot, est_cursor_, [&](const GaitPhase& ev) {
             est_cursor_ = ev.detection_count;
+            std::string note;
             if (ev.phase == "HS") {
-                if (est_have_last_hs_) {
-                    const int64_t period = ev.timestamp_ns - est_last_hs_ts_;
-                    if (period > 0) {
-                        est_hs_to_hs_ns_ = period;
-                    }
-                }
-                est_last_hs_ts_ = ev.timestamp_ns;
-                est_have_last_hs_ = true;
-                // Open a stance interval; the matching TO closes it.
-                est_pending_hs_ = true;
-                est_pending_hs_ts_ = ev.timestamp_ns;
+                note = estimator_.on_heel_strike(ev.timestamp_ns);
+                estimator_had_data_ = true;
             } else if (ev.phase == "TO") {
-                if (est_pending_hs_) {
-                    const int64_t stance = ev.timestamp_ns - est_pending_hs_ts_;
-                    if (stance > 0) {
-                        stance_samples_ns_.push_back(stance);
-                        const size_t win = (cfg_.stance_est_window > 0)
-                                               ? static_cast<size_t>(cfg_.stance_est_window)
-                                               : 1;
-                        while (stance_samples_ns_.size() > win) {
-                            stance_samples_ns_.pop_front();
-                        }
-                    }
-                    est_pending_hs_ = false;
-                }
+                note = estimator_.on_toe_off(ev.timestamp_ns);
+            } else if (ev.phase == "RESET") {
+                reset_estimator("gait FSM resync");
+            }
+            if (!note.empty()) {
+                std::cout << "[slip] stance estimator: " << note << '\n';
+                std::cout.flush();
             }
         });
 }
 
-int64_t SlipPerturbationNode::stance_estimate_ns() const {
-    if (!stance_samples_ns_.empty()) {
-        int64_t sum = 0;
-        for (int64_t v : stance_samples_ns_) {
-            sum += v;
-        }
-        return sum / static_cast<int64_t>(stance_samples_ns_.size());
-    }
-    if (est_hs_to_hs_ns_ > 0) {
-        // Warm-up fallback before any stance has been measured: stance is ~0.60
-        // of the HS->HS gait period.
-        return static_cast<int64_t>(0.60 * static_cast<double>(est_hs_to_hs_ns_));
-    }
-    return 0;  // not warmed yet
-}
-
 bool SlipPerturbationNode::schedule_before_to(int64_t t_hs_ns) {
-    const int64_t stance_ns = stance_estimate_ns();
+    const int64_t stance_ns = estimator_.predict_stance_ns();
     if (stance_ns <= 0) {
         return false;
     }
