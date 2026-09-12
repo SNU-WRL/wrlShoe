@@ -14,6 +14,7 @@
 #include "motorized_shoe/data_bus.hpp"
 #include "motorized_shoe/data_logger.hpp"
 #include "motorized_shoe/gait_phase_detection_node.hpp"
+#include "motorized_shoe/imu_watchdog.hpp"
 #include "motorized_shoe/keyboard_input.hpp"
 #include "motorized_shoe/read_can_interpret_imu_node.hpp"
 #include "motorized_shoe/read_can_malfunction_from_elmo_node.hpp"
@@ -87,17 +88,19 @@ int main(int argc, char* argv[]) {
         motorized_shoe::DataBus bus;
         motorized_shoe::DataLogger logger(log_path);
 
-        motorized_shoe::SendCanCommandToElmoNode cmd_node(cfg, bus);
+        // The slip ramp override is passed into the constructor so the
+        // worker's init job sees it regardless of timing.
+        motorized_shoe::SendCanCommandToElmoNode cmd_node(cfg, bus, cfg.slip.slip_profile_acceleration);
         // Slip experiment: motors must stay at 0 outside the slip burst.
         // Suppress gait-phase velocity commands so process_foot never spins
         // the motor on its own — only inject_velocity (slip burst / post-slip
         // hold) drives the motor.
         cmd_node.set_suppress_gait_velocity_commands(true);
-        cmd_node.set_slip_profile_acceleration(cfg.slip.slip_profile_acceleration);
         motorized_shoe::ReadCanMalfunctionFromElmoNode status_node(cfg, bus);
         motorized_shoe::ReadCanInterpretImuNode imu_node(cfg, bus);
         motorized_shoe::GaitPhaseDetectionNode gait_node(cfg, bus);
         motorized_shoe::SlipPerturbationNode slip_node(cfg.slip, bus, cmd_node);
+        motorized_shoe::ImuWatchdog imu_watchdog(cfg.imu_stale_ms);
 
         motorized_shoe::KeyboardInput keyboard;
         keyboard.start([&slip_node, &cmd_node, &cfg](char c) {
@@ -120,7 +123,7 @@ int main(int argc, char* argv[]) {
         uint32_t prev_log_us = 0;  // previous tick's logging cost (see log_latency_us)
 
         std::cout << "Starting slip-perturbation loop at " << loop_hz
-                  << " Hz. Logging every 10 ms to " << log_path << '\n';
+                  << " Hz. Logging every tick to " << log_path << '\n';
         std::cout << "Slip config: foot=" << cfg.slip.foot
                   << " velocity=" << cfg.slip.slip_velocity
                   << " duration=" << cfg.slip.slip_duration_ms << "ms"
@@ -171,6 +174,7 @@ int main(int argc, char* argv[]) {
             // the next snapshot, so log_latency_us is one tick delayed.
             const auto log_start = std::chrono::steady_clock::now();
             auto snapshot = bus.snapshot();
+            imu_watchdog.check(snapshot);
             snapshot.imu_node_latency_us = imu_us;
             snapshot.status_node_latency_us = status_us;
             snapshot.gait_node_latency_us = gait_us;
@@ -196,6 +200,10 @@ int main(int argc, char* argv[]) {
         }
 
         keyboard.stop();
+        // Never leave a drive running or armed after the loop: velocity 0 +
+        // Shutdown on both. (A run killed mid-slip used to leave the wheel
+        // at the slip velocity until the next init.)
+        cmd_node.stop_all_drives();
         logger.flush();
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << '\n';

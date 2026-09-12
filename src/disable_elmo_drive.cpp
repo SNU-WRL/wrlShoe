@@ -2,7 +2,7 @@
 //
 // Usage:
 //   sudo ./build/disable_elmo_drive [--iface can0]
-//        [--left 127] [--right 126] [--side both|left|right]
+//        [--left 126] [--right 127] [--side both|left|right]
 
 #include <cstdint>
 #include <cstdlib>
@@ -18,8 +18,8 @@ namespace {
 
 struct Args {
     std::string iface = "can0";
-    int left_node = 127;
-    int right_node = 126;
+    int left_node = 126;   // matches config/motorized_shoe_params.yaml
+    int right_node = 127;
     bool enable_left = true;
     bool enable_right = true;
 };
@@ -59,7 +59,7 @@ Args parse_args(int argc, char** argv) {
             }
         } else if (k == "-h" || k == "--help") {
             std::cout << "Usage: " << argv[0]
-                      << " [--iface can0] [--left 127] [--right 126]"
+                      << " [--iface can0] [--left 126] [--right 127]"
                          " [--side both|left|right]\n";
             std::exit(0);
         } else {

@@ -187,6 +187,10 @@ Config load_config(const std::string& path) {
     apply_int(kv, "elmo_node_ids.right", cfg.elmo_node_right);
 
     apply_int(kv, "loop_frequency", cfg.loop_frequency_hz);
+    apply_int(kv, "imu_stale_ms", cfg.imu_stale_ms);
+    apply_int(kv, "elmo_config.status_poll_ms", cfg.status_poll_ms);
+    apply_int(kv, "elmo_config.fault_retry_ms", cfg.fault_retry_ms);
+    apply_int(kv, "elmo_config.fault_max_retries", cfg.fault_max_retries);
 
     {
         int v = cfg.profile_acceleration;
@@ -251,6 +255,8 @@ Config load_config(const std::string& path) {
         apply_string(kv, "slip_perturbation.mode2_key", s);
         if (!s.empty()) cfg.slip.mode2_key = s.front();
     }
+
+    cfg.slip.imu_stale_ms = cfg.imu_stale_ms;
 
     apply_bool(kv, "logging.imu_data_log", cfg.log_imu);
     apply_bool(kv, "logging.gait_phase_log", cfg.log_gait);

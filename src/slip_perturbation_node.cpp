@@ -2,6 +2,8 @@
 
 #include <iostream>
 
+#include "motorized_shoe/imu_watchdog.hpp"
+
 namespace motorized_shoe {
 
 SlipPerturbationNode::SlipPerturbationNode(
@@ -34,31 +36,40 @@ void SlipPerturbationNode::tick() {
     }
 
     const auto now = std::chrono::steady_clock::now();
+    const SystemSnapshot s = bus_.snapshot();
+    const GaitPhase& gait = (cfg_.foot == "Left") ? s.gait_left : s.gait_right;
+    const IMUData& imu = (cfg_.foot == "Left") ? s.imu_left : s.imu_right;
+    const ImuWatchdog watchdog(cfg_.imu_stale_ms);
+    const bool imu_stale = watchdog.is_stale(imu, s.timestamp_ns);
 
     // Consume any pending keyboard request (only while idle; ignore otherwise).
     const int req = pending_request_.exchange(0, std::memory_order_acq_rel);
     if (req != 0) {
-        if (state_ == State::Idle) {
-            const Mode mode = static_cast<Mode>(req);
-            const SystemSnapshot s = bus_.snapshot();
-            const GaitPhase& gait =
-                (cfg_.foot == "Left") ? s.gait_left : s.gait_right;
+        const Mode mode = static_cast<Mode>(req);
+        const char* mode_name = (mode == Mode::AfterHS) ? "AfterHS" : "BeforeTO";
+        std::string why;
+        if (state_ != State::Idle) {
+            std::cerr << "[slip] request ignored: slip already in progress\n";
+        } else if (imu_stale) {
+            // A dead slip-foot IMU means no HS will ever arrive: say so now
+            // instead of sitting armed forever (2026-09-08 run).
+            std::cerr << "[slip] REFUSED to arm " << mode_name << ": " << cfg_.foot
+                      << " IMU is stale (" << (imu.valid ? (s.timestamp_ns - imu.timestamp_ns) / 1000000 : -1)
+                      << " ms old) -- check the sensor/cable\n";
+        } else if (!cmd_node_.is_drive_available(cfg_.foot, &why)) {
+            std::cerr << "[slip] REFUSED to arm " << mode_name << ": " << cfg_.foot << " " << why << '\n';
+        } else {
             // Seed the detection counter so we only react to the NEXT event,
             // not whatever phase happens to be current at arming time.
             last_seen_detection_count_ = gait.detection_count;
             detection_count_initialized_ = true;
             current_mode_ = mode;
             state_ = (mode == Mode::AfterHS) ? State::ArmedAfterHS : State::ArmedBeforeTO;
-            std::cout << "[slip] armed mode="
-                      << (mode == Mode::AfterHS ? "AfterHS" : "BeforeTO")
-                      << " foot=" << cfg_.foot << '\n';
+            std::cout << "[slip] armed mode=" << mode_name << " foot=" << cfg_.foot << '\n';
             std::cout.flush();
-        } else {
-            std::cerr << "[slip] request ignored: slip already in progress\n";
         }
     }
 
-    const SystemSnapshot s = bus_.snapshot();
     const bool fault_active =
         (cfg_.foot == "Left") ? (s.status_left.valid && s.status_left.fault)
                               : (s.status_right.valid && s.status_right.fault);
@@ -69,6 +80,16 @@ void SlipPerturbationNode::tick() {
             cmd_node_.release_external_control(cfg_.foot);
         }
         std::cerr << "[slip] aborted: fault on " << cfg_.foot << '\n';
+        state_ = State::Idle;
+        current_mode_ = Mode::None;
+        return;
+    }
+
+    // Disarm if the slip foot's IMU dies while we are waiting for a gait
+    // event; a late-returning sensor must not fire a surprise slip.
+    if (imu_stale && (state_ == State::ArmedAfterHS || state_ == State::ArmedBeforeTO ||
+                      state_ == State::DelayingBeforeSlip)) {
+        std::cerr << "[slip] DISARMED: " << cfg_.foot << " IMU went stale while armed\n";
         state_ = State::Idle;
         current_mode_ = Mode::None;
         return;

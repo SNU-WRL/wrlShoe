@@ -35,6 +35,9 @@ struct SlipConfig {
     int32_t slip_profile_acceleration = 10000000;
     char mode1_key = '1';
     char mode2_key = '2';
+    // Copied from Config::imu_stale_ms at load time so the slip node can
+    // refuse to arm on a dead slip-foot IMU.
+    int imu_stale_ms = 100;
 };
 
 struct GaitThresholds {
@@ -65,8 +68,24 @@ struct Config {
     IMUCanIds imu_left_can_ids{0x110, 0x111, 0x112, 0x113};
     IMUCanIds imu_right_can_ids{0x120, 0x121, 0x122, 0x123};
 
-    int elmo_node_left = 127;
-    int elmo_node_right = 126;
+    // Match config/motorized_shoe_params.yaml (left 126, right 127).
+    int elmo_node_left = 126;
+    int elmo_node_right = 127;
+
+    // IMU freshness watchdog: a foot whose newest IMU sample is older than
+    // this is reported stale (console warning, CSV age column), and the slip
+    // node refuses to arm on a stale slip foot. Both IMUs have been seen to
+    // drop out mid-run (right on 2026-09-08, left on 2026-09-11).
+    int imu_stale_ms = 100;
+
+    // ELMO statusword SDO poll period (ms). Faults are additionally reported
+    // immediately via the drive's EMCY frame, so this poll is the fallback.
+    int status_poll_ms = 500;
+    // Fault recovery: if a drive still reports a fault this long after a
+    // recovery attempt completed, the recovery is retried, up to
+    // fault_max_retries times per fault episode.
+    int fault_retry_ms = 1000;
+    int fault_max_retries = 5;
 
     int loop_frequency_hz = 1000;
 

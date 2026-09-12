@@ -38,6 +38,39 @@ CANSocket::~CANSocket() {
     }
 }
 
+void CANSocket::set_filters(const std::vector<CanIdFilter>& filters) {
+    std::vector<struct can_filter> kf;
+    kf.reserve(filters.size());
+    for (const auto& f : filters) {
+        struct can_filter cf;
+        cf.can_id = f.id;
+        cf.can_mask = f.mask;
+        kf.push_back(cf);
+    }
+    const void* ptr = kf.empty() ? nullptr : static_cast<const void*>(kf.data());
+    const socklen_t len = static_cast<socklen_t>(kf.size() * sizeof(struct can_filter));
+    if (setsockopt(sock_, SOL_CAN_RAW, CAN_RAW_FILTER, ptr, len) < 0) {
+        std::ostringstream oss;
+        oss << "Failed to set CAN filters (errno=" << errno << ": " << std::strerror(errno) << ")";
+        throw std::runtime_error(oss.str());
+    }
+}
+
+void CANSocket::drain() {
+    struct can_frame frame;
+    while (true) {
+        struct pollfd fds[1];
+        fds[0].fd = sock_;
+        fds[0].events = POLLIN;
+        if (poll(fds, 1, 0) <= 0) {
+            return;
+        }
+        if (read(sock_, &frame, sizeof(frame)) <= 0) {
+            return;
+        }
+    }
+}
+
 void CANSocket::send_message(uint32_t can_id, const uint8_t* data, size_t len) {
     if (len > 8) {
         throw std::runtime_error("CAN frame data length exceeded (max 8 bytes)");

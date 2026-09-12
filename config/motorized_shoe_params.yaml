@@ -23,6 +23,13 @@ elmo_node_ids:
 # Control loop frequency (Hz)
 loop_frequency: 1000
 
+# IMU freshness watchdog (ms). A foot whose newest IMU frame is older than this
+# is reported STALE on the console (and in the imu_*_age_ms CSV columns), and
+# the slip app refuses to arm / disarms when the slip foot's IMU is stale.
+# Nominal frame period is 10 ms; the largest healthy gap seen is ~70 ms. Both
+# IMUs have dropped out mid-run (right 2026-09-08, left 2026-09-11).
+imu_stale_ms: 100
+
 # Gait Detection Configuration
 gait_detection:
   # Rate at which the gait FSM is stepped = the IMU message rate (~100 Hz), NOT
@@ -92,6 +99,14 @@ elmo_config:
   can_write_timeout: 100
   profile_acceleration: 1000000
   profile_deceleration: 1000000
+  # Statusword SDO poll period (ms). Faults are also reported instantly via
+  # the drive's EMCY frame, so this is only the fallback / clear detection.
+  status_poll_ms: 500
+  # Fault recovery (runs on the command node's worker thread, never blocks
+  # the 1 kHz loop): if the drive still reports a fault this long after a
+  # recovery attempt finished, retry, up to fault_max_retries per episode.
+  fault_retry_ms: 1000
+  fault_max_retries: 5
 
 # Slip Perturbation (used by motorized_shoe_slip_app)
 # Two modes selectable from keyboard, both one-shot per keypress:
@@ -106,7 +121,7 @@ slip_perturbation:
   enabled: true
   foot: "Right"
   slip_velocity: 150000
-  slip_duration_ms: 500
+  slip_duration_ms: 300
   mode1_delay_after_hs_ms: 0
   # Forward-slip lead before the predicted toe-off (ms).
   to_slip_lead_ms: 50
@@ -118,7 +133,7 @@ slip_perturbation:
   # Init default is 1e6 → ~150 ms ramp for a 150k slip, so most of a short
   # burst is spent ramping. 1e7 (~15 ms ramp) makes the slip onset
   # essentially instantaneous relative to the gait event.
-  slip_profile_acceleration: 10000000
+  slip_profile_acceleration: 5000000
   mode1_key: "1"
   mode2_key: "2"
 

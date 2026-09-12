@@ -11,8 +11,16 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace motorized_shoe {
+
+// One kernel-side receive filter: a frame is accepted when
+// (frame.can_id & mask) == (id & mask).
+struct CanIdFilter {
+    uint32_t id;
+    uint32_t mask;
+};
 
 class CANSocket {
 public:
@@ -24,6 +32,18 @@ public:
 
     void send_message(uint32_t can_id, const uint8_t* data, size_t len);
     bool recv_message(uint32_t& can_id, uint8_t* data, size_t& len, int timeout_ms = 0);
+
+    // Install kernel receive filters (CAN_RAW_FILTER). Every raw socket bound
+    // to an interface otherwise receives EVERY frame on that bus, including
+    // the 4 kHz TPDO stream and the other nodes' SDO traffic, and a socket
+    // that is not drained every tick fills its receive buffer with frames it
+    // will never look at. An empty list restores accept-all.
+    void set_filters(const std::vector<CanIdFilter>& filters);
+
+    // Discard everything currently queued on the socket. Used before an SDO
+    // exchange so a stale response from an earlier transaction cannot be
+    // mistaken for the reply to this one.
+    void drain();
 
 private:
     int sock_;

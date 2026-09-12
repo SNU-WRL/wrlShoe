@@ -21,7 +21,11 @@ DataLogger::DataLogger(const std::string& path) : file_(path, std::ios::out | st
             << "motor_left_position,motor_left_velocity,motor_left_current,"
             << "motor_left_velocity_demand,motor_left_current_demand,"
             << "motor_right_position,motor_right_velocity,motor_right_current,"
-            << "motor_right_velocity_demand,motor_right_current_demand"
+            << "motor_right_velocity_demand,motor_right_current_demand,"
+            // Appended 2026-09-12: IMU sample age at snapshot time (ms, -1 =
+            // never received) and the drives' CiA-402 error code (0x603F /
+            // EMCY) of the current or last fault (0 = none).
+            << "imu_left_age_ms,imu_right_age_ms,status_left_error,status_right_error"
           << '\n';
 
     file_ << std::fixed << std::setprecision(6);
@@ -52,6 +56,9 @@ void DataLogger::write_row(const SystemSnapshot& s) {
     }
 
     const double time_s = static_cast<double>(s.timestamp_ns - start_time_ns_) / 1e9;
+    auto age_ms = [&](const IMUData& imu) {
+        return imu.valid ? static_cast<double>(s.timestamp_ns - imu.timestamp_ns) / 1e6 : -1.0;
+    };
 
     file_ << time_s << ','
           << s.imu_left.msg_count << ',' << s.imu_left.ax << ',' << s.imu_left.ay << ',' << s.imu_left.az << ','
@@ -70,7 +77,9 @@ void DataLogger::write_row(const SystemSnapshot& s) {
           << s.motor_left.position << ',' << s.motor_left.velocity << ',' << s.motor_left.current << ','
           << s.motor_left.velocity_demand << ',' << s.motor_left.current_demand << ','
           << s.motor_right.position << ',' << s.motor_right.velocity << ',' << s.motor_right.current << ','
-          << s.motor_right.velocity_demand << ',' << s.motor_right.current_demand
+          << s.motor_right.velocity_demand << ',' << s.motor_right.current_demand << ','
+          << age_ms(s.imu_left) << ',' << age_ms(s.imu_right) << ','
+          << s.status_left.error_code << ',' << s.status_right.error_code
           << '\n';
 }
 
