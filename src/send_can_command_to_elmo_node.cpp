@@ -7,373 +7,97 @@
 
 namespace motorized_shoe {
 
-SendCanCommandToElmoNode::SendCanCommandToElmoNode(const Config& cfg, DataBus& bus)
+namespace {
+const char* job_name(int type) {
+    switch (type) {
+        case 1: return "init";
+        case 2: return "fault-recovery";
+        case 3: return "re-enable";
+        default: return "?";
+    }
+}
+}  // namespace
+
+SendCanCommandToElmoNode::SendCanCommandToElmoNode(const Config& cfg, DataBus& bus,
+                                                   int32_t slip_profile_acceleration)
     : bus_(bus),
       can_socket_(std::make_unique<CANSocket>(cfg.can_elmo_interface)),
-      left_node_id_(cfg.elmo_node_left),
-      right_node_id_(cfg.elmo_node_right),
       profile_acceleration_(cfg.profile_acceleration),
       profile_deceleration_(cfg.profile_deceleration),
-      velocity_map_(cfg.velocity_map) {
-    // Run the blocking ELMO init off the main thread. The init sequence
-    // issues ~7 SDO writes with 50 ms gaps on can0; running it inline blocks
-    // the constructor for ~400 ms, during which the can1 IMU socket fills
-    // and the shared SPI bus saturates. The control loop and IMU drain start
-    // immediately; per-foot ready flags gate command sends until init lands.
-    init_thread_ = std::thread([this]() {
-        try {
-            initialize_elmo_driver(left_node_id_);
-            left_ready_.store(true, std::memory_order_release);
-        } catch (const std::exception& e) {
-            std::cerr << "[send_can_command_to_elmo] Left ELMO init failed: " << e.what() << '\n';
-        }
+      velocity_map_(cfg.velocity_map),
+      fault_retry_ms_((cfg.fault_retry_ms > 0) ? cfg.fault_retry_ms : 1000),
+      fault_max_retries_((cfg.fault_max_retries >= 0) ? cfg.fault_max_retries : 5) {
+    left_.name = "Left";
+    left_.node_id = cfg.elmo_node_left;
+    right_.name = "Right";
+    right_.node_id = cfg.elmo_node_right;
+    slip_profile_acceleration_.store(slip_profile_acceleration, std::memory_order_release);
 
-        if (shutting_down_.load(std::memory_order_acquire)) {
-            return;
-        }
+    // This socket is written from the control thread (target velocity,
+    // controlword) and read only by the worker during SDO exchanges. Without a
+    // filter it would also collect the 4 kHz TPDO stream it never looks at.
+    can_socket_->set_filters({{0x580, 0x780}});
 
-        try {
-            initialize_elmo_driver(right_node_id_);
-            right_ready_.store(true, std::memory_order_release);
-        } catch (const std::exception& e) {
-            std::cerr << "[send_can_command_to_elmo] Right ELMO init failed: " << e.what() << '\n';
-        }
-    });
+    // The blocking ELMO bring-up runs on the worker so the control loop and
+    // the IMU drain start immediately; per-foot ready flags gate command
+    // sends until each drive lands in Operation Enabled.
+    worker_ = std::thread([this]() { worker_loop(); });
+    enqueue_job(JobType::Init, left_);
+    enqueue_job(JobType::Init, right_);
 }
 
 SendCanCommandToElmoNode::~SendCanCommandToElmoNode() {
     shutting_down_.store(true, std::memory_order_release);
-    if (init_thread_.joinable()) {
-        init_thread_.join();
+    queue_cv_.notify_all();
+    if (worker_.joinable()) {
+        worker_.join();
     }
 }
 
-void SendCanCommandToElmoNode::tick() {
-    const bool left_ready = left_ready_.load(std::memory_order_acquire);
-    const bool right_ready = right_ready_.load(std::memory_order_acquire);
+// ---------------------------------------------------------------------------
+// Small accessors
 
-    if (!left_ready && !right_ready) {
-        return;
-    }
-
-    const bool stop_requested = emergency_stop_requested_.load(std::memory_order_acquire);
-    if (stop_requested != emergency_stop_applied_) {
-        if (stop_requested) {
-            std::cout << "[motors] DISABLING drives (Shutdown control word)\n";
-            std::cout.flush();
-            if (left_ready && !left_disabled_) {
-                disable_drive(left_node_id_, "Left");
-            }
-            if (right_ready && !right_disabled_) {
-                disable_drive(right_node_id_, "Right");
-            }
-        } else {
-            std::cout << "[motors] RE-ENABLING drives (re-running init, ~0.5 s each)\n";
-            std::cout.flush();
-            if (left_disabled_) {
-                reenable_drive(left_node_id_, "Left");
-            }
-            if (right_disabled_) {
-                reenable_drive(right_node_id_, "Right");
-            }
-        }
-        emergency_stop_applied_ = stop_requested;
-    }
-
-    // In slip-experiment mode, explicitly send velocity 0 to each drive the
-    // first time it becomes ready (and again after any re-enable). The init
-    // sequence ends in Operation Enabled but does not write target_velocity,
-    // so the drive could otherwise hold whatever stale value it had.
-    if (suppress_gait_velocity_commands_.load(std::memory_order_acquire)) {
-        // Park each drive at 0 once it finishes init (and again after a
-        // re-enable). Only the target-velocity SDO is written here — the
-        // profile acceleration override is applied by the init thread with
-        // proper 50 ms spacing between SDOs; back-to-back SDO writes from
-        // the real-time tick can land in the drive's SDO server within the
-        // same processing window and silently abort.
-        if (left_ready && !left_disabled_ && !left_initial_park_done_) {
-            try {
-                send_velocity_command(left_node_id_, 0);
-                left_initial_park_done_ = true;
-                ElmoCommand cmd;
-                cmd.timestamp_ns = now_ns();
-                cmd.foot = "Left";
-                cmd.target_velocity = 0;
-                cmd.command_type = 6;  // 6 = park at 0 (slip-mode suppression)
-                cmd.valid = true;
-                bus_.update_command(cmd);
-            } catch (const std::exception& e) {
-                std::cerr << "[send_can_command_to_elmo] Left park-at-0 failed: " << e.what() << '\n';
-            }
-        }
-        if (right_ready && !right_disabled_ && !right_initial_park_done_) {
-            try {
-                send_velocity_command(right_node_id_, 0);
-                right_initial_park_done_ = true;
-                ElmoCommand cmd;
-                cmd.timestamp_ns = now_ns();
-                cmd.foot = "Right";
-                cmd.target_velocity = 0;
-                cmd.command_type = 6;
-                cmd.valid = true;
-                bus_.update_command(cmd);
-            } catch (const std::exception& e) {
-                std::cerr << "[send_can_command_to_elmo] Right park-at-0 failed: " << e.what() << '\n';
-            }
-        }
-    }
-
-    const SystemSnapshot s = bus_.snapshot();
-
-    if (left_ready && !left_disabled_) {
-        const bool left_fault = s.status_left.valid && s.status_left.fault;
-        if (left_fault && active_fault_foot_names_.insert("Left").second) {
-            try {
-                stop_and_reset_elmo(left_node_id_, "Left");
-            } catch (const std::exception& e) {
-                std::cerr << "[send_can_command_to_elmo] Left fault handling failed: " << e.what() << '\n';
-            }
-        } else if (!left_fault) {
-            active_fault_foot_names_.erase("Left");
-        }
-
-        if (s.gait_left.valid) {
-            process_foot(s.gait_left, left_node_id_, "Left", last_left_detection_count_);
-        }
-    }
-
-    if (right_ready && !right_disabled_) {
-        const bool right_fault = s.status_right.valid && s.status_right.fault;
-        if (right_fault && active_fault_foot_names_.insert("Right").second) {
-            try {
-                stop_and_reset_elmo(right_node_id_, "Right");
-            } catch (const std::exception& e) {
-                std::cerr << "[send_can_command_to_elmo] Right fault handling failed: " << e.what() << '\n';
-            }
-        } else if (!right_fault) {
-            active_fault_foot_names_.erase("Right");
-        }
-
-        if (s.gait_right.valid) {
-            process_foot(s.gait_right, right_node_id_, "Right", last_right_detection_count_);
-        }
-    }
+SendCanCommandToElmoNode::FootState& SendCanCommandToElmoNode::state_for(const std::string& foot) {
+    return (foot == "Left") ? left_ : right_;
 }
-
-void SendCanCommandToElmoNode::process_foot(
-    const GaitPhase& gait, int node_id, const std::string& foot, uint32_t& last_detection_count) {
-    if (active_fault_foot_names_.count(foot) > 0) {
-        return;
-    }
-
-    const bool external = (foot == "Left") ? left_external_active_ : right_external_active_;
-    if (external) {
-        last_detection_count = gait.detection_count;
-        return;
-    }
-
-    if (suppress_gait_velocity_commands_.load(std::memory_order_acquire)) {
-        last_detection_count = gait.detection_count;
-        return;
-    }
-
-    if (gait.detection_count == last_detection_count) {
-        return;
-    }
-    last_detection_count = gait.detection_count;
-
-    int32_t target_velocity = 0;
-    const auto it = velocity_map_.find(gait.phase);
-    if (it != velocity_map_.end()) {
-        target_velocity = it->second;
-    }
-
-    try {
-        send_velocity_command(node_id, target_velocity);
-    } catch (const std::exception& e) {
-        // Transient CAN write failure (e.g. ENOBUFS). Don't add to
-        // active_fault_foot_names_ — that set tracks ELMO-reported drive
-        // faults and is only cleared by a status fault->no-fault transition,
-        // which won't happen for a CAN socket hiccup. Just log and retry on
-        // the next phase change.
-        std::cerr << "[send_can_command_to_elmo] " << foot
-                  << " command send failed: " << e.what() << '\n';
-        return;
-    }
-
-    ElmoCommand cmd;
-    cmd.timestamp_ns = now_ns();
-    cmd.foot = foot;
-    cmd.target_velocity = target_velocity;
-    cmd.command_type = 0;
-    cmd.valid = true;
-    bus_.update_command(cmd);
+const SendCanCommandToElmoNode::FootState& SendCanCommandToElmoNode::state_for(
+    const std::string& foot) const {
+    return (foot == "Left") ? left_ : right_;
 }
-
-void SendCanCommandToElmoNode::inject_velocity(const std::string& foot, int32_t velocity) {
-    if (active_fault_foot_names_.count(foot) > 0) {
-        std::cerr << "[send_can_command_to_elmo] " << foot
-                  << " inject_velocity ignored: ELMO drive fault active\n";
-        return;
-    }
-    const bool disabled = (foot == "Left") ? left_disabled_ : right_disabled_;
-    if (disabled) {
-        std::cerr << "[send_can_command_to_elmo] " << foot
-                  << " inject_velocity ignored: drive disabled\n";
-        return;
-    }
-    const bool ready = (foot == "Left")
-                           ? left_ready_.load(std::memory_order_acquire)
-                           : right_ready_.load(std::memory_order_acquire);
-    if (!ready) {
-        std::cerr << "[send_can_command_to_elmo] " << foot
-                  << " inject_velocity ignored: drive not ready\n";
-        return;
-    }
-
-    const int node_id = (foot == "Left") ? left_node_id_ : right_node_id_;
-    try {
-        send_velocity_command(node_id, velocity);
-    } catch (const std::exception& e) {
-        std::cerr << "[send_can_command_to_elmo] " << foot
-                  << " inject_velocity failed: " << e.what() << '\n';
-        return;
-    }
-
-    if (foot == "Left") {
-        left_external_active_ = true;
-    } else {
-        right_external_active_ = true;
-    }
-
-    ElmoCommand cmd;
-    cmd.timestamp_ns = now_ns();
-    cmd.foot = foot;
-    cmd.target_velocity = velocity;
-    cmd.command_type = 2;  // 2 = external injection (slip perturbation)
-    cmd.valid = true;
-    bus_.update_command(cmd);
-
-    std::cout << "[send_can_command_to_elmo] " << foot
-              << " inject_velocity sent: " << velocity
-              << " (node " << node_id << ")\n";
-    std::cout.flush();
+SendCanCommandToElmoNode::FootShared& SendCanCommandToElmoNode::shared_for(const std::string& foot) {
+    return (foot == "Left") ? left_shared_ : right_shared_;
 }
-
-void SendCanCommandToElmoNode::release_external_control(const std::string& foot) {
-    if (foot == "Left") {
-        left_external_active_ = false;
-    } else {
-        right_external_active_ = false;
-    }
-
-    if (active_fault_foot_names_.count(foot) > 0) {
-        return;
-    }
-    const bool disabled = (foot == "Left") ? left_disabled_ : right_disabled_;
-    if (disabled) {
-        return;
-    }
-    const bool ready = (foot == "Left")
-                           ? left_ready_.load(std::memory_order_acquire)
-                           : right_ready_.load(std::memory_order_acquire);
-    if (!ready) {
-        return;
-    }
-
-    const SystemSnapshot s = bus_.snapshot();
-    const GaitPhase& gait = (foot == "Left") ? s.gait_left : s.gait_right;
-    if (!gait.valid) {
-        return;
-    }
-
-    int32_t target_velocity = 0;
-    const auto it = velocity_map_.find(gait.phase);
-    if (it != velocity_map_.end()) {
-        target_velocity = it->second;
-    }
-
-    const int node_id = (foot == "Left") ? left_node_id_ : right_node_id_;
-    try {
-        send_velocity_command(node_id, target_velocity);
-    } catch (const std::exception& e) {
-        std::cerr << "[send_can_command_to_elmo] " << foot
-                  << " release failed: " << e.what() << '\n';
-        return;
-    }
-
-    ElmoCommand cmd;
-    cmd.timestamp_ns = now_ns();
-    cmd.foot = foot;
-    cmd.target_velocity = target_velocity;
-    cmd.command_type = 3;  // 3 = post-slip release back to gait map
-    cmd.valid = true;
-    bus_.update_command(cmd);
+const SendCanCommandToElmoNode::FootShared& SendCanCommandToElmoNode::shared_for(
+    const std::string& foot) const {
+    return (foot == "Left") ? left_shared_ : right_shared_;
 }
 
 bool SendCanCommandToElmoNode::is_externally_controlled(const std::string& foot) const {
-    return (foot == "Left") ? left_external_active_ : right_external_active_;
+    return state_for(foot).external_active;
 }
 
-void SendCanCommandToElmoNode::disable_drive(int node_id, const std::string& foot) {
-    try {
-        send_velocity_command(node_id, 0);
-        auto shutdown = create_sdo_download(
-            node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SHUTDOWN_STATE, 2);
-        can_socket_->send_message(shutdown.can_id, shutdown.data, shutdown.dlc);
-    } catch (const std::exception& e) {
-        std::cerr << "[send_can_command_to_elmo] " << foot
-                  << " disable failed: " << e.what() << '\n';
-        return;
-    }
-
-    if (foot == "Left") {
-        left_disabled_ = true;
-        left_external_active_ = false;
-    } else {
-        right_disabled_ = true;
-        right_external_active_ = false;
-    }
-
-    ElmoCommand cmd;
-    cmd.timestamp_ns = now_ns();
-    cmd.foot = foot;
-    cmd.target_velocity = 0;
-    cmd.command_type = 4;  // 4 = drive disabled (Shutdown)
-    cmd.valid = true;
-    bus_.update_command(cmd);
-
-    std::cout << "[send_can_command_to_elmo] " << foot << " disabled\n";
-    std::cout.flush();
+bool SendCanCommandToElmoNode::is_faulted(const std::string& foot) const {
+    return state_for(foot).fault_active;
 }
 
-void SendCanCommandToElmoNode::reenable_drive(int node_id, const std::string& foot) {
-    try {
-        initialize_elmo_driver(node_id, /*configure_pdos=*/false);
-    } catch (const std::exception& e) {
-        std::cerr << "[send_can_command_to_elmo] " << foot
-                  << " re-enable failed: " << e.what() << '\n';
-        return;
+bool SendCanCommandToElmoNode::is_drive_available(const std::string& foot, std::string* reason) const {
+    const FootState& st = state_for(foot);
+    const FootShared& sh = shared_for(foot);
+    const char* why = nullptr;
+    if (!sh.ready.load(std::memory_order_acquire)) {
+        why = "drive not initialized yet";
+    } else if (st.disabled) {
+        why = "drive disabled (emergency stop; press 'r')";
+    } else if (st.fault_active) {
+        why = st.gave_up ? "drive fault, recovery gave up (press 's' then 'r', or restart)"
+                         : "drive fault, recovery in progress";
+    } else if (sh.job_pending.load(std::memory_order_acquire)) {
+        why = "drive busy (init/recovery running)";
     }
-
-    if (foot == "Left") {
-        left_disabled_ = false;
-        left_initial_park_done_ = false;
-    } else {
-        right_disabled_ = false;
-        right_initial_park_done_ = false;
+    if (reason != nullptr) {
+        *reason = why ? why : "";
     }
-
-    ElmoCommand cmd;
-    cmd.timestamp_ns = now_ns();
-    cmd.foot = foot;
-    cmd.target_velocity = 0;
-    cmd.command_type = 5;  // 5 = drive re-enabled
-    cmd.valid = true;
-    bus_.update_command(cmd);
-
-    std::cout << "[send_can_command_to_elmo] " << foot << " re-enabled\n";
-    std::cout.flush();
+    return why == nullptr;
 }
 
 void SendCanCommandToElmoNode::request_emergency_stop(bool stopped) {
@@ -390,6 +114,390 @@ void SendCanCommandToElmoNode::set_suppress_gait_velocity_commands(bool suppress
 
 void SendCanCommandToElmoNode::set_slip_profile_acceleration(int32_t accel) {
     slip_profile_acceleration_.store(accel, std::memory_order_release);
+}
+
+void SendCanCommandToElmoNode::publish_command(const std::string& foot, int32_t velocity, uint8_t type) {
+    ElmoCommand cmd;
+    cmd.timestamp_ns = now_ns();
+    cmd.foot = foot;
+    cmd.target_velocity = velocity;
+    cmd.command_type = type;
+    cmd.valid = true;
+    bus_.update_command(cmd);
+}
+
+// ---------------------------------------------------------------------------
+// Control-thread tick
+
+void SendCanCommandToElmoNode::tick() {
+    const auto now = std::chrono::steady_clock::now();
+
+    // 1. Consume worker completions.
+    for (FootState* st : {&left_, &right_}) {
+        FootShared& sh = shared_for(st->name);
+        const int res = sh.job_result.exchange(0, std::memory_order_acq_rel);
+        if (res == 0) {
+            continue;
+        }
+        const bool ok = res > 0;
+        const int type = ok ? res : -res;
+        if (type == static_cast<int>(JobType::Reenable)) {
+            if (ok) {
+                st->disabled = false;
+                st->initial_park_done = false;
+                publish_command(st->name, 0, 5);  // 5 = drive re-enabled
+                std::cout << "[send_can_command_to_elmo] " << st->name << " re-enabled\n";
+            } else {
+                std::cerr << "[send_can_command_to_elmo] " << st->name
+                          << " re-enable failed; press 'r' again to retry\n";
+            }
+        } else if (type == static_cast<int>(JobType::Recover)) {
+            st->last_recovery_done = now;
+            st->recovery_done_valid = true;
+            st->initial_park_done = false;
+            std::cerr << "[send_can_command_to_elmo] " << st->name << " fault-recovery attempt "
+                      << st->recovery_attempts << (ok ? " OK (drive re-armed)" : " FAILED") << '\n';
+        }
+        // Init completion is signalled through the ready flag.
+    }
+
+    const bool left_ready = left_shared_.ready.load(std::memory_order_acquire);
+    const bool right_ready = right_shared_.ready.load(std::memory_order_acquire);
+    if (!left_ready && !right_ready) {
+        return;
+    }
+
+    // 2. Emergency stop / resume.
+    const bool stop_requested = emergency_stop_requested_.load(std::memory_order_acquire);
+    if (stop_requested != emergency_stop_applied_) {
+        if (stop_requested) {
+            std::cout << "[motors] DISABLING drives (Shutdown control word)\n";
+            std::cout.flush();
+            if (left_ready && !left_.disabled) disable_drive(left_);
+            if (right_ready && !right_.disabled) disable_drive(right_);
+        } else {
+            std::cout << "[motors] RE-ENABLING drives (re-running init on the worker, ~0.5 s each)\n";
+            std::cout.flush();
+            if (left_.disabled) left_.reenable_requested = true;
+            if (right_.disabled) right_.reenable_requested = true;
+        }
+        emergency_stop_applied_ = stop_requested;
+    }
+    for (FootState* st : {&left_, &right_}) {
+        FootShared& sh = shared_for(st->name);
+        if (st->reenable_requested && !sh.job_pending.load(std::memory_order_acquire)) {
+            st->reenable_requested = false;
+            enqueue_job(JobType::Reenable, *st);
+        }
+    }
+
+    // 3. Slip mode: park each drive at 0 once it is ready (and after any
+    //    re-enable / recovery). The init already writes target 0 before
+    //    enabling, so this is a belt-and-braces resend from the control
+    //    thread, logged as command type 6.
+    if (suppress_gait_velocity_commands_.load(std::memory_order_acquire)) {
+        for (FootState* st : {&left_, &right_}) {
+            FootShared& sh = shared_for(st->name);
+            if (!sh.ready.load(std::memory_order_acquire) || st->disabled || st->fault_active ||
+                st->initial_park_done || sh.job_pending.load(std::memory_order_acquire)) {
+                continue;
+            }
+            try {
+                send_velocity_command(st->node_id, 0);
+                st->initial_park_done = true;
+                publish_command(st->name, 0, 6);  // 6 = park at 0 (slip-mode suppression)
+            } catch (const std::exception& e) {
+                std::cerr << "[send_can_command_to_elmo] " << st->name << " park-at-0 failed: "
+                          << e.what() << '\n';
+            }
+        }
+    }
+
+    // 4. Faults + gait-mapped commands.
+    const SystemSnapshot s = bus_.snapshot();
+    for (FootState* st : {&left_, &right_}) {
+        FootShared& sh = shared_for(st->name);
+        if (!sh.ready.load(std::memory_order_acquire) || st->disabled) {
+            continue;
+        }
+        const ElmoStatus& status = (st->name == "Left") ? s.status_left : s.status_right;
+        handle_fault(*st, status);
+
+        const GaitPhase& gait = (st->name == "Left") ? s.gait_left : s.gait_right;
+        if (gait.valid) {
+            process_foot(gait, *st);
+        }
+    }
+}
+
+void SendCanCommandToElmoNode::handle_fault(FootState& st, const ElmoStatus& status) {
+    const bool fault = status.valid && status.fault;
+    FootShared& sh = shared_for(st.name);
+    const auto now = std::chrono::steady_clock::now();
+
+    if (!fault) {
+        if (st.fault_active) {
+            st.fault_active = false;
+            st.recovery_attempts = 0;
+            st.gave_up = false;
+            st.recovery_done_valid = false;
+            std::cerr << "[send_can_command_to_elmo] " << st.name << " drive OK again\n";
+        }
+        return;
+    }
+
+    if (!st.fault_active) {
+        st.fault_active = true;
+        st.recovery_attempts = 0;
+        st.gave_up = false;
+        st.recovery_done_valid = false;
+        // The drive has already dropped its motor (MO=0); the wheel is free.
+        // Any external control (a slip in progress) is void.
+        st.external_active = false;
+        std::cerr << "[send_can_command_to_elmo] " << st.name << " drive FAULT"
+                  << " (statusword 0x" << std::hex << status.status_word
+                  << ", error code 0x" << status.error_code << std::dec << ")\n";
+    }
+
+    if (st.gave_up || sh.job_pending.load(std::memory_order_acquire)) {
+        return;
+    }
+    const bool due =
+        !st.recovery_done_valid ||
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - st.last_recovery_done).count() >=
+            fault_retry_ms_;
+    if (!due) {
+        return;
+    }
+    if (st.recovery_attempts >= fault_max_retries_) {
+        st.gave_up = true;
+        std::cerr << "[send_can_command_to_elmo] " << st.name << " still faulted after "
+                  << st.recovery_attempts << " recovery attempts -- giving up. Check the error"
+                  << " code above; press 's' then 'r' to retry, or restart the app.\n";
+        return;
+    }
+
+    ++st.recovery_attempts;
+    try {
+        send_velocity_command(st.node_id, 0);  // best effort: clear a stale slip target
+    } catch (const std::exception& e) {
+        std::cerr << "[send_can_command_to_elmo] " << st.name << " pre-recovery velocity 0 failed: "
+                  << e.what() << '\n';
+    }
+    publish_command(st.name, 0, 1);  // 1 = fault stop + recovery
+    std::cerr << "[send_can_command_to_elmo] re-arming " << st.name << " drive (node " << st.node_id
+              << "), attempt " << st.recovery_attempts << "/" << fault_max_retries_ << '\n';
+    enqueue_job(JobType::Recover, st);
+}
+
+void SendCanCommandToElmoNode::process_foot(const GaitPhase& gait, FootState& st) {
+    if (st.fault_active || st.external_active ||
+        suppress_gait_velocity_commands_.load(std::memory_order_acquire) ||
+        shared_for(st.name).job_pending.load(std::memory_order_acquire)) {
+        st.last_detection_count = gait.detection_count;
+        return;
+    }
+
+    if (gait.detection_count == st.last_detection_count) {
+        return;
+    }
+    st.last_detection_count = gait.detection_count;
+
+    int32_t target_velocity = 0;
+    const auto it = velocity_map_.find(gait.phase);
+    if (it != velocity_map_.end()) {
+        target_velocity = it->second;
+    }
+
+    try {
+        send_velocity_command(st.node_id, target_velocity);
+    } catch (const std::exception& e) {
+        // Transient CAN write failure (e.g. ENOBUFS): log and retry on the
+        // next phase change. Not a drive fault.
+        std::cerr << "[send_can_command_to_elmo] " << st.name
+                  << " command send failed: " << e.what() << '\n';
+        return;
+    }
+    publish_command(st.name, target_velocity, 0);
+}
+
+void SendCanCommandToElmoNode::inject_velocity(const std::string& foot, int32_t velocity) {
+    std::string reason;
+    if (!is_drive_available(foot, &reason)) {
+        std::cerr << "[send_can_command_to_elmo] " << foot << " inject_velocity ignored: " << reason
+                  << '\n';
+        return;
+    }
+    FootState& st = state_for(foot);
+    try {
+        send_velocity_command(st.node_id, velocity);
+    } catch (const std::exception& e) {
+        std::cerr << "[send_can_command_to_elmo] " << foot
+                  << " inject_velocity failed: " << e.what() << '\n';
+        return;
+    }
+    st.external_active = true;
+    publish_command(foot, velocity, 2);  // 2 = external injection (slip perturbation)
+    std::cout << "[send_can_command_to_elmo] " << foot << " inject_velocity sent: " << velocity
+              << " (node " << st.node_id << ")\n";
+    std::cout.flush();
+}
+
+void SendCanCommandToElmoNode::release_external_control(const std::string& foot) {
+    FootState& st = state_for(foot);
+    st.external_active = false;
+
+    if (!is_drive_available(foot)) {
+        return;
+    }
+
+    // In slip mode the gait map is suppressed: releasing means "hold 0", never
+    // the Swing velocity (the old code could re-spin the motor here).
+    int32_t target_velocity = 0;
+    if (!suppress_gait_velocity_commands_.load(std::memory_order_acquire)) {
+        const SystemSnapshot s = bus_.snapshot();
+        const GaitPhase& gait = (foot == "Left") ? s.gait_left : s.gait_right;
+        if (!gait.valid) {
+            return;
+        }
+        const auto it = velocity_map_.find(gait.phase);
+        if (it != velocity_map_.end()) {
+            target_velocity = it->second;
+        }
+    }
+
+    try {
+        send_velocity_command(st.node_id, target_velocity);
+    } catch (const std::exception& e) {
+        std::cerr << "[send_can_command_to_elmo] " << foot
+                  << " release failed: " << e.what() << '\n';
+        return;
+    }
+    publish_command(foot, target_velocity, 3);  // 3 = post-slip release back to gait map
+}
+
+void SendCanCommandToElmoNode::disable_drive(FootState& st) {
+    try {
+        send_velocity_command(st.node_id, 0);
+        send_controlword(st.node_id, CANOPEN_SHUTDOWN_STATE);
+    } catch (const std::exception& e) {
+        std::cerr << "[send_can_command_to_elmo] " << st.name
+                  << " disable failed: " << e.what() << '\n';
+        return;
+    }
+    st.disabled = true;
+    st.external_active = false;
+    publish_command(st.name, 0, 4);  // 4 = drive disabled (Shutdown)
+    std::cout << "[send_can_command_to_elmo] " << st.name << " disabled\n";
+    std::cout.flush();
+}
+
+void SendCanCommandToElmoNode::stop_all_drives() {
+    // Let an in-flight worker job finish (bounded) so we do not interleave
+    // with its SDO exchange, then stop taking new jobs.
+    for (int i = 0; i < 100 && worker_busy_.load(std::memory_order_acquire); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    shutting_down_.store(true, std::memory_order_release);
+    queue_cv_.notify_all();
+
+    for (FootState* st : {&left_, &right_}) {
+        if (!shared_for(st->name).ready.load(std::memory_order_acquire)) {
+            continue;
+        }
+        try {
+            send_velocity_command(st->node_id, 0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            send_controlword(st->node_id, CANOPEN_SHUTDOWN_STATE);
+            std::cout << "[send_can_command_to_elmo] " << st->name
+                      << " stopped and disabled at exit\n";
+        } catch (const std::exception& e) {
+            std::cerr << "[send_can_command_to_elmo] " << st->name
+                      << " stop at exit failed: " << e.what() << '\n';
+        }
+        st->disabled = true;
+    }
+    std::cout.flush();
+}
+
+// ---------------------------------------------------------------------------
+// Single-frame sends
+
+void SendCanCommandToElmoNode::send_velocity_command(int node_id, int32_t velocity) {
+    auto vel = create_sdo_download(node_id, CANOPEN_TARGET_VELOCITY, 0, static_cast<uint32_t>(velocity), 4);
+    can_socket_->send_message(vel.can_id, vel.data, vel.dlc);
+}
+
+void SendCanCommandToElmoNode::send_controlword(int node_id, uint16_t value) {
+    auto cw = create_sdo_download(node_id, CANOPEN_CONTROL_WORD, 0, value, 2);
+    can_socket_->send_message(cw.can_id, cw.data, cw.dlc);
+}
+
+// ---------------------------------------------------------------------------
+// Worker
+
+void SendCanCommandToElmoNode::enqueue_job(JobType type, const FootState& foot) {
+    shared_for(foot.name).job_pending.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        queue_.push_back(Job{type, foot.node_id, foot.name});
+    }
+    queue_cv_.notify_one();
+}
+
+void SendCanCommandToElmoNode::worker_loop() {
+    while (true) {
+        Job job;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cv_.wait(lock, [&] {
+                return shutting_down_.load(std::memory_order_acquire) || !queue_.empty();
+            });
+            if (shutting_down_.load(std::memory_order_acquire)) {
+                // Drop queued jobs; mark them not pending so nothing waits.
+                for (const auto& j : queue_) {
+                    shared_for(j.foot).job_pending.store(false, std::memory_order_release);
+                }
+                queue_.clear();
+                return;
+            }
+            job = queue_.front();
+            queue_.pop_front();
+        }
+        worker_busy_.store(true, std::memory_order_release);
+        run_job(job);
+        worker_busy_.store(false, std::memory_order_release);
+    }
+}
+
+void SendCanCommandToElmoNode::run_job(const Job& job) {
+    FootShared& sh = shared_for(job.foot);
+    bool ok = false;
+    try {
+        switch (job.type) {
+            case JobType::Init:
+                initialize_elmo_driver(job.node_id, /*configure_pdos=*/true);
+                ok = true;
+                break;
+            case JobType::Reenable:
+                initialize_elmo_driver(job.node_id, /*configure_pdos=*/false);
+                ok = true;
+                break;
+            case JobType::Recover:
+                ok = recover_from_fault(job.node_id);
+                break;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[send_can_command_to_elmo] " << job.foot << " " << job_name(static_cast<int>(job.type))
+                  << " failed: " << e.what() << '\n';
+        ok = false;
+    }
+    if (ok && (job.type == JobType::Init || job.type == JobType::Reenable)) {
+        sh.ready.store(true, std::memory_order_release);
+    }
+    const int code = static_cast<int>(job.type);
+    sh.job_result.store(ok ? code : -code, std::memory_order_release);
+    sh.job_pending.store(false, std::memory_order_release);
 }
 
 bool SendCanCommandToElmoNode::write_sdo_confirmed(int node_id, uint16_t index, uint8_t subindex,
@@ -429,7 +537,7 @@ bool SendCanCommandToElmoNode::write_sdo_confirmed(int node_id, uint16_t index, 
                 break;  // poll timeout: no frame arrived
             }
             // Only the matching node's SDO server response for THIS object counts;
-            // skip TPDOs, other nodes' responses, and responses for other objects.
+            // skip other nodes' responses and responses for other objects.
             if (rx_id != expect_id || len < 4) {
                 continue;
             }
@@ -564,6 +672,10 @@ bool SendCanCommandToElmoNode::run_elmo_os_command(int node_id, const std::strin
 void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configure_pdos) {
     using namespace std::chrono_literals;
 
+    // Stale responses from an earlier exchange must not be mistaken for the
+    // replies to this one.
+    can_socket_->drain();
+
     // PDO mapping must be edited while the node is NMT Pre-Operational. Force
     // pre-op first (a node coming out of power-up is already there, but a prior
     // run may have left it Operational), configure the TPDOs, then NMT Start so
@@ -580,16 +692,14 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configur
     can_socket_->send_message(nmt.can_id, nmt.data, nmt.dlc);
     std::this_thread::sleep_for(100ms);
 
-    auto fault_reset = create_sdo_download(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_FAULT_RESET, 2);
-    can_socket_->send_message(fault_reset.can_id, fault_reset.data, fault_reset.dlc);
+    write_sdo_confirmed(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_FAULT_RESET, 2, "fault-reset");
     std::this_thread::sleep_for(50ms);
 
     // Force the motor off (Shutdown -> Ready to Switch On) BEFORE touching the
     // profiler parameters: the native AC/DC writes below are rejected while the
     // motor is on, and a hard-killed previous session can leave the drive in
     // Operation Enabled through the NMT/fault-reset preamble above.
-    auto shutdown = create_sdo_download(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SHUTDOWN_STATE, 2);
-    can_socket_->send_message(shutdown.can_id, shutdown.data, shutdown.dlc);
+    write_sdo_confirmed(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SHUTDOWN_STATE, 2, "shutdown");
     std::this_thread::sleep_for(50ms);
 
     // Mode of operation = 3 (Profile Velocity). Confirmed: if this is not applied
@@ -601,16 +711,7 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configur
     // (profile_acceleration_ / profile_deceleration_) and can differ.
     // Slip mode wants a fast symmetric ramp so the motor reaches the commanded
     // slip velocity before the burst ends; when slip_profile_acceleration_ > 0
-    // it overrides BOTH accel and decel. The override is consulted here (with
-    // the same 50 ms inter-SDO spacing the rest of init uses) rather than from
-    // the real-time tick path, where back-to-back SDO writes have been seen to
-    // make the drive silently abort and ignore later target-velocity writes.
-    //
-    // Ordering note: set_slip_profile_acceleration() runs after the constructor
-    // returns, but this init thread reads slip_profile_acceleration_ ~0.5 s into
-    // init, so the slip app's post-construction store is observed in time. This
-    // is order-dependent; if init timing ever changes, plumb the slip accel
-    // through the constructor instead.
+    // it overrides BOTH accel and decel.
     const int32_t slip_accel = slip_profile_acceleration_.load(std::memory_order_acquire);
     const bool slip_override = slip_accel > 0;
     const uint32_t accel_value =
@@ -654,9 +755,6 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configur
     std::this_thread::sleep_for(50ms);
 
     // Definitive readback: query the native SD the profiler actually uses.
-    // No motion needed -- launch the app and read this line. (Reading 0x6083
-    // or AC back only proves those shadow values were stored, which they are
-    // even while the real ramp stays at the SD flash default of 1e6.)
     std::string sd_reply;
     if (run_elmo_os_command(node_id, "SD", &sd_reply)) {
         const long long rb_sd = std::strtoll(sd_reply.c_str(), nullptr, 10);
@@ -673,13 +771,60 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configur
                   << " SD readback failed -- ramp NOT verified\n";
     }
 
-    auto switch_on = create_sdo_download(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SWITCH_ON_STATE, 2);
-    can_socket_->send_message(switch_on.can_id, switch_on.data, switch_on.dlc);
+    // Target velocity 0 BEFORE enabling: 0x60FF keeps its last value across
+    // fault/disable, so a session killed mid-slip would otherwise spin the
+    // motor at the slip velocity the instant Operation Enabled lands.
+    write_sdo_confirmed(node_id, CANOPEN_TARGET_VELOCITY, 0, 0, 4, "target-velocity=0");
+    std::this_thread::sleep_for(20ms);
+
+    write_sdo_confirmed(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SWITCH_ON_STATE, 2, "switch-on");
     std::this_thread::sleep_for(50ms);
 
-    auto enable = create_sdo_download(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_ENABLE_OPERATION_STATE, 2);
-    can_socket_->send_message(enable.can_id, enable.data, enable.dlc);
+    write_sdo_confirmed(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_ENABLE_OPERATION_STATE, 2,
+                        "enable-operation");
     std::this_thread::sleep_for(50ms);
+
+    uint32_t sw = 0;
+    if (read_sdo_u32(node_id, CANOPEN_STATUS_WORD, 0, sw, "statusword")) {
+        const bool oe = (sw & STATUS_OPERATION_ENABLED) != 0;
+        const bool fault = (sw & STATUS_FAULT) != 0;
+        std::cout << "[send_can_command_to_elmo] node " << node_id << " init done: statusword 0x"
+                  << std::hex << (sw & 0xFFFF) << std::dec
+                  << (fault ? " FAULT" : (oe ? " Operation Enabled" : " NOT enabled")) << '\n';
+        std::cout.flush();
+    }
+}
+
+bool SendCanCommandToElmoNode::recover_from_fault(int node_id) {
+    using namespace std::chrono_literals;
+    can_socket_->drain();
+
+    // Rising edge on controlword bit 7 clears the fault; then walk the CiA-402
+    // state machine back up. Mode of operation and the SD ramp survive a
+    // fault, so they are not rewritten here (that is what kept the old
+    // recovery at ~600 ms).
+    write_sdo_confirmed(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_FAULT_RESET, 2, "fault-reset");
+    std::this_thread::sleep_for(20ms);
+    write_sdo_confirmed(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SHUTDOWN_STATE, 2, "shutdown");
+    std::this_thread::sleep_for(20ms);
+    write_sdo_confirmed(node_id, CANOPEN_TARGET_VELOCITY, 0, 0, 4, "target-velocity=0");
+    std::this_thread::sleep_for(20ms);
+    write_sdo_confirmed(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_SWITCH_ON_STATE, 2, "switch-on");
+    std::this_thread::sleep_for(20ms);
+    write_sdo_confirmed(node_id, CANOPEN_CONTROL_WORD, 0, CANOPEN_ENABLE_OPERATION_STATE, 2,
+                        "enable-operation");
+    std::this_thread::sleep_for(30ms);
+
+    uint32_t sw = 0;
+    if (!read_sdo_u32(node_id, CANOPEN_STATUS_WORD, 0, sw, "statusword")) {
+        return false;
+    }
+    const bool oe = (sw & STATUS_OPERATION_ENABLED) != 0;
+    const bool fault = (sw & STATUS_FAULT) != 0;
+    std::cerr << "[send_can_command_to_elmo] node " << node_id << " recovery statusword 0x"
+              << std::hex << (sw & 0xFFFF) << std::dec
+              << (fault ? " (still FAULT)" : (oe ? " (Operation Enabled)" : " (not enabled)")) << '\n';
+    return oe && !fault;
 }
 
 void SendCanCommandToElmoNode::configure_pdo_mapping(int node_id) {
@@ -690,15 +835,12 @@ void SendCanCommandToElmoNode::configure_pdo_mapping(int node_id) {
     //   TPDO1 (0x180+id): position 0x6064 (32b) + velocity 0x606C (32b) = 8 B
     //   TPDO2 (0x280+id): current 0x6078 (16b) + velocity demand 0x606B (32b)
     //                     + current demand 0x6074 (16b)                 = 8 B
-    // TPDO2 packs the drive-internal command (demand) values alongside current
-    // in the same 8-byte frame, so streaming them costs no extra bus bandwidth.
-    // Statusword stays on the existing 2 Hz SDO poll for fault detection.
+    // Statusword stays on the SDO poll (+ EMCY) for fault detection.
     //
     // Standard remap procedure per PDO: disable the PDO (COB-ID bit 31), set the
     // transmission type, clear the mapping count, write the mapping entries, set
     // the count, then re-enable the COB-ID. Writes are blind (fire-and-forget
-    // with a short gap), matching the rest of init — the SDO responses are not
-    // verified here. The inter-write gap keeps the drive's SDO server from
+    // with a short gap); the inter-write gap keeps the drive's SDO server from
     // collapsing back-to-back transfers.
     const uint32_t id = static_cast<uint32_t>(node_id);
     auto write_sdo = [&](uint16_t index, uint8_t sub, uint32_t value, int length) {
@@ -732,38 +874,10 @@ void SendCanCommandToElmoNode::configure_pdo_mapping(int node_id) {
     write_sdo(CANOPEN_TPDO2_MAP, 3, map_current_demand, 4);
     write_sdo(CANOPEN_TPDO2_MAP, 0, 3, 1);                    // three entries
     write_sdo(CANOPEN_TPDO2_COMM, 1, cob2, 4);               // re-enable
-}
 
-void SendCanCommandToElmoNode::send_velocity_command(int node_id, int32_t velocity) {
-    auto vel = create_sdo_download(node_id, CANOPEN_TARGET_VELOCITY, 0, static_cast<uint32_t>(velocity), 4);
-    can_socket_->send_message(vel.can_id, vel.data, vel.dlc);
-}
-
-void SendCanCommandToElmoNode::stop_and_reset_elmo(int node_id, const std::string& foot) {
-    send_velocity_command(node_id, 0);
-
-    ElmoCommand stop_cmd;
-    stop_cmd.timestamp_ns = now_ns();
-    stop_cmd.foot = foot;
-    stop_cmd.target_velocity = 0;
-    stop_cmd.command_type = 1;
-    stop_cmd.valid = true;
-    bus_.update_command(stop_cmd);
-
-    // Bare Fault Reset leaves the drive in 'Switch On Disabled', so re-run the
-    // full init (Fault Reset -> Shutdown -> Switch On -> Enable Operation) to
-    // bring it back to 'Operation Enabled'. This blocks the loop for ~0.5 s
-    // during recovery; that's acceptable for a fault-recovery path.
-    std::cerr << "[send_can_command_to_elmo] re-arming " << foot
-              << " drive (node " << node_id << ")\n";
-    try {
-        initialize_elmo_driver(node_id, /*configure_pdos=*/false);
-        std::cerr << "[send_can_command_to_elmo] " << foot
-                  << " drive re-armed\n";
-    } catch (const std::exception& e) {
-        std::cerr << "[send_can_command_to_elmo] " << foot
-                  << " re-arm failed: " << e.what() << '\n';
-    }
+    // The blind writes above leave their acks queued; clear them so the
+    // confirmed writes that follow see only their own responses.
+    can_socket_->drain();
 }
 
 }  // namespace motorized_shoe

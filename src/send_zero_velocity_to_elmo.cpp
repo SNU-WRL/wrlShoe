@@ -2,7 +2,7 @@
 //
 // Usage:
 //   sudo ./build/send_zero_velocity_to_elmo [--iface can0]
-//        [--left 127] [--right 126] [--rate-hz 100] [--log path.csv]
+//        [--left 126] [--right 127] [--rate-hz 100] [--log path.csv]
 //        [--side both|left|right]
 //
 // Press Ctrl+C to stop. On exit the program tries to leave the drives in a
@@ -112,8 +112,8 @@ void initialize_elmo(CANSocket& sock, int node_id, int32_t accel_value) {
 
 struct Args {
     std::string iface = "can0";
-    int left_node = 127;
-    int right_node = 126;
+    int left_node = 126;   // matches config/motorized_shoe_params.yaml
+    int right_node = 127;
     double rate_hz = 100.0;
     std::string log_path;  // empty => auto-named timestamped file
     bool enable_left = true;
@@ -174,7 +174,7 @@ Args parse_args(int argc, char** argv) {
             }
         } else if (k == "-h" || k == "--help") {
             std::cout << "Usage: " << argv[0]
-                      << " [--iface can0] [--left 127] [--right 126]"
+                      << " [--iface can0] [--left 126] [--right 127]"
                          " [--rate-hz 100] [--log path.csv]"
                          " [--side both|left|right] [--accel 10000000]\n";
             std::exit(0);

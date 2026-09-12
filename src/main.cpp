@@ -14,6 +14,7 @@
 #include "motorized_shoe/data_bus.hpp"
 #include "motorized_shoe/data_logger.hpp"
 #include "motorized_shoe/gait_phase_detection_node.hpp"
+#include "motorized_shoe/imu_watchdog.hpp"
 #include "motorized_shoe/keyboard_input.hpp"
 #include "motorized_shoe/read_can_interpret_imu_node.hpp"
 #include "motorized_shoe/read_can_malfunction_from_elmo_node.hpp"
@@ -97,6 +98,7 @@ int main(int argc, char* argv[]) {
         motorized_shoe::ReadCanMalfunctionFromElmoNode status_node(cfg, bus);
         motorized_shoe::ReadCanInterpretImuNode imu_node(cfg, bus);
         motorized_shoe::GaitPhaseDetectionNode gait_node(cfg, bus);
+        motorized_shoe::ImuWatchdog imu_watchdog(cfg.imu_stale_ms);
 
         motorized_shoe::KeyboardInput keyboard;
         keyboard.start([&cmd_node](char c) {
@@ -128,7 +130,7 @@ int main(int argc, char* argv[]) {
             uint32_t loop_max_us = 0;
         } stats;
 
-        std::cout << "Starting loop at " << loop_hz << " Hz. Logging every 10ms to " << log_path << '\n';
+        std::cout << "Starting loop at " << loop_hz << " Hz. Logging every tick to " << log_path << '\n';
         std::cout << "Keys: 's' = stop motors, 'r' = resume, 'q' = quit\n";
         std::cout.flush();
 
@@ -183,6 +185,7 @@ int main(int argc, char* argv[]) {
             // the next snapshot, so log_latency_us is one tick delayed.
             const auto log_start = std::chrono::steady_clock::now();
             auto snapshot = bus.snapshot();
+            imu_watchdog.check(snapshot);
             snapshot.imu_node_latency_us = imu_us;
             snapshot.status_node_latency_us = status_us;
             snapshot.gait_node_latency_us = gait_us;
@@ -208,6 +211,7 @@ int main(int argc, char* argv[]) {
         }
 
         keyboard.stop();
+        cmd_node.stop_all_drives();
         logger.flush();
 
         if (stats.samples > 0) {

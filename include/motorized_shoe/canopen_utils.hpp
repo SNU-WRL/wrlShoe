@@ -31,6 +31,10 @@ namespace motorized_shoe {
 #define CANOPEN_TARGET_VELOCITY 0x60FF
 #define CANOPEN_STATUS_WORD 0x6041
 #define CANOPEN_CONTROL_WORD 0x6040
+// CiA-402 error code of the most recent fault (UINT16). Also carried in the
+// drive's EMCY frame (COB-ID 0x80+node_id) the instant the fault occurs.
+#define CANOPEN_ERROR_CODE 0x603F
+#define CANOPEN_EMCY_COB_BASE 0x080
 
 // CiA-402 motor feedback objects (read back via SDO upload).
 #define CANOPEN_POSITION_ACTUAL 0x6064  // INT32, counts

@@ -66,6 +66,12 @@ struct ElmoStatus {
     bool ready_to_switch_on = false;
     bool switched_on = false;
 
+    // CiA-402 error code (0x603F) / EMCY error code of the current or most
+    // recent fault, 0 when none has been reported. Populated from the drive's
+    // EMCY frame (immediate) and from an 0x603F SDO read issued when the
+    // statusword fault bit is first seen (fallback if no EMCY arrived).
+    uint16_t error_code = 0;
+
     std::string error_message;
     bool valid = false;
 };
