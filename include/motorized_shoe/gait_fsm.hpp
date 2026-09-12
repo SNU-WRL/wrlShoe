@@ -58,9 +58,10 @@ public:
         // events (TO, HS) this is BACK-DATED to the trough sample (minus the
         // filter group delay), not the sample on which the event was declared.
         int64_t event_timestamp_ns = 0;
-        // "TO" or "HS" on the firing sample, "" otherwise. The slip node consumes
-        // these labels directly (HS = backward/AfterHS anchor + stance estimator;
-        // TO = stance estimator only).
+        // "TO" or "HS" on the firing sample, "RESET" when the resync guard
+        // dropped the machine back to Stance, "" otherwise. The slip node
+        // consumes these labels directly (HS = backward/AfterHS anchor + stance
+        // estimator; TO = stance estimator only; RESET = estimator reset).
         const char* event_label = "";
     };
 

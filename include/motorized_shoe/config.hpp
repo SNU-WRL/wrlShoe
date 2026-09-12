@@ -24,7 +24,18 @@ struct SlipConfig {
     // it schedules the slip to fire at t_HS + max(0, stance_est - to_slip_lead_ms),
     // landing the -velocity burst just before the predicted toe-off.
     int to_slip_lead_ms = 50;             // forward-slip lead before predicted TO
-    int stance_est_window = 4;            // cycles averaged into the stance estimate
+    // Stance estimator (see stance_estimator.hpp): medians over the last
+    // `stance_est_window` clean cycles; a sample is clean only inside the
+    // stance/cycle plausibility windows; an HS gap above reset_gap_ms, an FSM
+    // resync, a drive fault or an emergency stop reset it, after which
+    // stance_est_warmup_cycles fresh clean stances are needed to predict.
+    int stance_est_window = 3;
+    int stance_est_warmup_cycles = 1;
+    int stance_min_ms = 300;
+    int stance_max_ms = 1500;
+    int cycle_min_ms = 600;
+    int cycle_max_ms = 2000;
+    int stance_est_reset_gap_ms = 2500;
     int mode2_delay_after_mst_ms = 200;   // DEPRECATED: superseded by to_slip_lead_ms.
                                           // Still parsed (kept for config compatibility)
                                           // but no longer used by the slip node.

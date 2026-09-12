@@ -96,6 +96,11 @@ ERROR-ACTIVE and RX/TX packets must count up.
   (default 100) is reported STALE on the console (and in the `imu_*_age_ms`
   CSV columns); the slip app refuses to arm, and disarms, when the slip foot's
   IMU is stale. An IMU that sends nothing at all is reported after 3 s.
+- Forward slip (mode 2) timing: the stance estimator rejects implausible
+  stances/cycles, predicts from the median stance fraction times the recent
+  cadence, resets after pauses / FSM resyncs / faults / emergency stops, and
+  cancels the slip if the toe-off arrives before the scheduled fire (see
+  `slip_perturbation` keys in the YAML and docs/slip_log_review_2026-09-12.md).
 - Standalone tools (`send_zero_velocity_to_elmo`, `disable_elmo_drive`) default
   to the YAML node ids: left = 126, right = 127.
 - Motor feedback (PDO): each drive streams CiA-402 position (`0x6064`),
