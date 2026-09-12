@@ -20,6 +20,12 @@ public:
         }
     }
 
+    // Status-frame update only: leaves the sample fields and timestamp alone.
+    void update_imu_node_status(const std::string& foot, const ImuNodeStatus& st) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ((foot == "Left") ? state_.imu_left : state_.imu_right).node_status = st;
+    }
+
     void update_gait(const GaitPhase& gait) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (gait.foot == "Left") {

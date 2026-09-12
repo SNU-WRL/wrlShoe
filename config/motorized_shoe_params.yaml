@@ -8,12 +8,14 @@ imu_left_can_ids:
   accelerometer: 0x111
   gyroscope: 0x112
   magnetometer: 0x113
+  status: 0x11F        # 1 Hz node health frame (firmware/teensy_imu_can)
 
 imu_right_can_ids:
   rotation_vector: 0x120
   accelerometer: 0x121
   gyroscope: 0x122
   magnetometer: 0x123
+  status: 0x12F
 
 # ELMO CANopen Node IDs (configurable per shoe)
 elmo_node_ids:

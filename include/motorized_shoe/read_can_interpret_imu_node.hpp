@@ -31,10 +31,12 @@ private:
         float my = 0.0f;
         float mz = 0.0f;
         uint32_t msg_count = 0;
+        ImuNodeStatus node_status;
     };
 
     void parse_can_message(uint32_t can_id, const uint8_t* data, size_t len);
     void publish_imu(const std::string& foot, const IMUBuffer& src);
+    void parse_status(const std::string& foot, IMUBuffer& buf, const uint8_t* data, size_t len);
 
     DataBus& bus_;
     IMUCanIds left_ids_;

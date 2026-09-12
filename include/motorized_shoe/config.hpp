@@ -12,6 +12,7 @@ struct IMUCanIds {
     int accelerometer = 0;
     int gyroscope = 0;
     int magnetometer = 0;
+    int status = 0;  // 1 Hz node health frame (0 = not sent by this firmware)
 };
 
 struct SlipConfig {
@@ -65,8 +66,8 @@ struct Config {
     std::string can_imu_interface = "can1";
     std::string can_elmo_interface = "can0";
 
-    IMUCanIds imu_left_can_ids{0x110, 0x111, 0x112, 0x113};
-    IMUCanIds imu_right_can_ids{0x120, 0x121, 0x122, 0x123};
+    IMUCanIds imu_left_can_ids{0x110, 0x111, 0x112, 0x113, 0x11F};
+    IMUCanIds imu_right_can_ids{0x120, 0x121, 0x122, 0x123, 0x12F};
 
     // Match config/motorized_shoe_params.yaml (left 126, right 127).
     int elmo_node_left = 126;
