@@ -128,7 +128,11 @@ ERROR-ACTIVE and RX/TX packets must count up.
   emits one SYNC (`0x80`) every `elmo_config.sync_period_ms` (default 10 ms, i.e.
   every tenth 1 kHz tick), so feedback updates at 100 Hz; it parses the TPDOs into
   `motor_{left,right}_{position,velocity,current,velocity_demand,current_demand}`.
-  The CSV logger writes every tick; motor columns repeat between SYNCs.
+  The CSV logger writes every tick; motor columns repeat between SYNCs. Rows
+  are formatted and written on the logger's own writer thread (normal
+  priority); the control thread only copies and hands off batches. Two
+  columns, `log_queue_depth` and `log_dropped`, show rows waiting for the SD
+  card and rows dropped after a stall longer than ~5 s.
   Statusword stays on a slow SDO poll (`elmo_config.status_poll_ms`, default
   500 ms) for fault detection; EMCY frames give immediate fault notification.
   Bus cost on can0: SYNC + 2 TPDOs × 2 drives is ~5000 frames/s at 1 ms, and

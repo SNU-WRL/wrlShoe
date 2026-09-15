@@ -148,10 +148,17 @@ struct SystemSnapshot {
     uint32_t loop_latency_us = 0;
 
     // Cost of the logging path on the control-loop thread (snapshot copy + queue
-    // + the every-10th-tick flush to disk), which falls *outside* loop_latency_us.
+    // + the every-10th-tick hand-off to the writer thread), which falls
+    // *outside* loop_latency_us. Since 2026-09-15 the file write itself runs
+    // on the logger's writer thread, so SD-card stalls no longer show here;
+    // they show as a growing log_queue_depth instead.
     // Recorded one tick late: the value in row N is the logging cost measured
     // during the previous tick (a snapshot can't carry its own logging time).
     uint32_t log_latency_us = 0;
+    // Filled by DataLogger::queue_snapshot: rows queued but not yet written
+    // when this row was queued, and cumulative rows dropped (queue full).
+    uint32_t log_queue_depth = 0;
+    uint32_t log_dropped = 0;
 };
 
 }  // namespace motorized_shoe

@@ -1,6 +1,10 @@
 #include "motorized_shoe/data_logger.hpp"
 
+#include <pthread.h>
+#include <sched.h>
+
 #include <iomanip>
+#include <iostream>
 #include <stdexcept>
 
 namespace motorized_shoe {
@@ -30,28 +34,115 @@ DataLogger::DataLogger(const std::string& path) : file_(path, std::ios::out | st
             // gyro frames/s, sensor resets, timeout recoveries, CAN tx drops.
             // All 0 with firmware that does not send the frame.
             << "imu_left_node_hz,imu_left_node_resets,imu_left_node_timeouts,imu_left_node_tx_dropped,"
-            << "imu_right_node_hz,imu_right_node_resets,imu_right_node_timeouts,imu_right_node_tx_dropped"
+            << "imu_right_node_hz,imu_right_node_resets,imu_right_node_timeouts,imu_right_node_tx_dropped,"
+            // Appended 2026-09-15: writer-thread logger health. log_queue_depth =
+            // snapshots queued but not yet on disk when this row was queued
+            // (grows while the SD card stalls); log_dropped = cumulative rows
+            // dropped because the queue was full (kMaxQueued).
+            << "log_queue_depth,log_dropped"
           << '\n';
 
     file_ << std::fixed << std::setprecision(6);
+    pending_.reserve(64);
+    shared_.reserve(256);
+
+    // The control thread may already be SCHED_FIFO 99 (main() promotes itself
+    // before constructing the logger) and std::thread inherits that. The
+    // writer demotes itself to SCHED_OTHER first thing in writer_loop().
+    writer_ = std::thread(&DataLogger::writer_loop, this);
 }
 
 DataLogger::~DataLogger() {
-    flush();
+    drain();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stop_ = true;
+    }
+    cv_.notify_all();
+    if (writer_.joinable()) {
+        writer_.join();
+    }
 }
 
 void DataLogger::queue_snapshot(const SystemSnapshot& s) {
+    const uint32_t depth = unwritten_.load(std::memory_order_relaxed);
+    if (depth >= kMaxQueued) {
+        const uint32_t d = dropped_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (!drop_reported_) {
+            drop_reported_ = true;
+            std::cerr << "[logger] queue full (" << depth << " rows unwritten): dropping rows;"
+                      << " the log file device is stalled. Count in the log_dropped column.\n";
+        }
+        (void)d;
+        return;
+    }
     pending_.push_back(s);
+    SystemSnapshot& stored = pending_.back();
+    stored.log_queue_depth = depth;
+    stored.log_dropped = dropped_.load(std::memory_order_relaxed);
+    unwritten_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void DataLogger::flush() {
-    for (const auto& snapshot : pending_) {
-        write_row(snapshot);
+    if (pending_.empty()) {
+        return;
     }
-    pending_.clear();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (shared_.empty()) {
+            shared_.swap(pending_);  // O(1); keeps both capacities
+        } else {
+            shared_.insert(shared_.end(), std::make_move_iterator(pending_.begin()),
+                           std::make_move_iterator(pending_.end()));
+            pending_.clear();
+        }
+    }
+    cv_.notify_one();
+}
 
-    if (file_.is_open()) {
-        file_.flush();
+void DataLogger::drain() {
+    flush();
+    std::unique_lock<std::mutex> lock(mutex_);
+    idle_cv_.wait(lock, [&] { return shared_.empty() && !writer_busy_; });
+}
+
+void DataLogger::writer_loop() {
+    // Normal priority: this thread must never compete with the control loop.
+    sched_param sp{};
+    sp.sched_priority = 0;
+    if (pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp) != 0) {
+        std::cerr << "[logger] writer thread: could not set SCHED_OTHER\n";
+    }
+
+    std::vector<SystemSnapshot> batch;
+    batch.reserve(256);
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait(lock, [&] { return stop_ || !shared_.empty(); });
+            if (shared_.empty() && stop_) {
+                return;
+            }
+            batch.swap(shared_);
+            writer_busy_ = true;
+        }
+        try {
+            for (const auto& snapshot : batch) {
+                write_row(snapshot);
+            }
+            if (file_.is_open()) {
+                file_.flush();
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[logger] write failed: " << e.what() << '\n';
+        }
+        unwritten_.fetch_sub(static_cast<uint32_t>(batch.size()), std::memory_order_relaxed);
+        batch.clear();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            writer_busy_ = false;
+        }
+        idle_cv_.notify_all();
     }
 }
 
@@ -88,7 +179,8 @@ void DataLogger::write_row(const SystemSnapshot& s) {
           << s.imu_left.node_status.gyro_hz << ',' << s.imu_left.node_status.resets << ','
           << s.imu_left.node_status.timeouts << ',' << s.imu_left.node_status.tx_dropped << ','
           << s.imu_right.node_status.gyro_hz << ',' << s.imu_right.node_status.resets << ','
-          << s.imu_right.node_status.timeouts << ',' << s.imu_right.node_status.tx_dropped
+          << s.imu_right.node_status.timeouts << ',' << s.imu_right.node_status.tx_dropped << ','
+          << s.log_queue_depth << ',' << s.log_dropped
           << '\n';
 }
 
