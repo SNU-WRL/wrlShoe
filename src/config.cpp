@@ -194,6 +194,9 @@ Config load_config(const std::string& path) {
     apply_int(kv, "elmo_config.sync_period_ms", cfg.elmo_sync_period_ms);
     apply_int(kv, "elmo_config.fault_retry_ms", cfg.fault_retry_ms);
     apply_int(kv, "elmo_config.fault_max_retries", cfg.fault_max_retries);
+    apply_int(kv, "elmo_config.stall_current_permille", cfg.stall_current_permille);
+    apply_int(kv, "elmo_config.stall_velocity_counts", cfg.stall_velocity_counts);
+    apply_int(kv, "elmo_config.stall_ms", cfg.stall_ms);
 
     {
         int v = cfg.profile_acceleration;

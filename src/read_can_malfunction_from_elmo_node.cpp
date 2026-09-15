@@ -119,8 +119,8 @@ void ReadCanMalfunctionFromElmoNode::tick() {
 
     // Trigger the next round of feedback TPDOs. The drives transmit on receipt;
     // those frames are drained at the top of the next tick. Rate-limited by
-    // elmo_sync_period_ms: at one SYNC per 1 kHz tick both drives overran
-    // their CAN receiver (EMCY 0x8110, ~1/s).
+    // elmo_sync_period_ms (default 10 ms = 100 Hz feedback): at one SYNC per
+    // 1 kHz tick both drives overran their CAN receiver (EMCY 0x8110, ~1/s).
     if ((tick_count_++ % static_cast<uint64_t>(sync_every_ticks_)) == 0) {
         send_sync();
     }

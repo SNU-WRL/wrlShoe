@@ -97,15 +97,26 @@ struct Config {
     // drive transmit two TPDOs, and each drive also has to receive the other
     // drive's TPDOs plus the SYNC. At 1 ms (the loop period) that was ~5000
     // frames/s on can0 and both drives reported EMCY 0x8110 (CAN overrun)
-    // about once a second on 2026-09-15. 2 ms halves the load; raise it
-    // further if 0x8110 keeps appearing. Feedback / CSV motor columns update
-    // at 1000 / sync_period_ms Hz.
-    int elmo_sync_period_ms = 2;
+    // about once a second on 2026-09-15. 2 ms (2500 frames/s) already
+    // produced none; 10 ms (100 Hz feedback, ~500 frames/s) is plenty for the
+    // CSV and the stall guard. Feedback / CSV motor columns update at
+    // 1000 / sync_period_ms Hz.
+    int elmo_sync_period_ms = 10;
     // Fault recovery: if a drive still reports a fault this long after a
     // recovery attempt completed, the recovery is retried, up to
     // fault_max_retries times per fault episode.
     int fault_retry_ms = 1000;
     int fault_max_retries = 5;
+    // Stall guard (control thread): a drive holding at least
+    // stall_current_permille with |velocity| <= stall_velocity_counts and a
+    // velocity demand of 0 for stall_ms is disabled (Shutdown) and logged;
+    // press 's' then 'r' to re-enable. 2026-09-15: the Right drive sat at
+    // ~1000 permille (its continuous limit) for 50-80 s holding a wheel that
+    // never turned and tripped over-temperature (EMCY 0x4310) twice.
+    // stall_ms = 0 disables the guard.
+    int stall_current_permille = 800;
+    int stall_velocity_counts = 500;
+    int stall_ms = 2000;
 
     int loop_frequency_hz = 1000;
 

@@ -109,7 +109,15 @@ private:
         bool gave_up = false;
         std::chrono::steady_clock::time_point last_recovery_done{};
         bool recovery_done_valid = false;
+        // Bus timestamp (now_ns) when the last Recover job finished. A
+        // statusword published before that instant belongs to the recovery
+        // sequence itself (the drive passes through non-fault states such
+        // as Switch On Disabled) and must not close the fault episode.
+        int64_t recovery_done_ns = 0;
         uint32_t last_detection_count = 0;
+        // Stall guard timing (see check_stall).
+        bool stall_timing = false;
+        std::chrono::steady_clock::time_point stall_since{};
     };
 
     // State shared with the worker (atomics only).
@@ -154,7 +162,13 @@ private:
 
     void process_foot(const GaitPhase& gait, FootState& st);
     void handle_fault(FootState& st, const ElmoStatus& status);
+    // Stall guard: disable a drive that holds high current with no motion
+    // and no velocity demand for longer than stall_ms_ (config).
+    void check_stall(FootState& st, const ElmoMotorInfo& motor, int64_t now_ns_value);
     void disable_drive(FootState& st);
+    // Worker only: read the Elmo-native failure reason (MF) and last error
+    // code (EC) over the 0x1023 OS-command interface and log them decoded.
+    void log_elmo_failure_reason(int node_id);
 
     DataBus& bus_;
     std::unique_ptr<CANSocket> can_socket_;
@@ -174,6 +188,9 @@ private:
     std::unordered_map<std::string, int32_t> velocity_map_;
     int fault_retry_ms_;
     int fault_max_retries_;
+    int stall_current_permille_;
+    int stall_velocity_counts_;
+    int stall_ms_;
 
     std::atomic<bool> emergency_stop_requested_{false};
     bool emergency_stop_applied_ = false;

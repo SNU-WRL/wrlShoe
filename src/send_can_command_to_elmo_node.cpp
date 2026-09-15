@@ -26,7 +26,10 @@ SendCanCommandToElmoNode::SendCanCommandToElmoNode(const Config& cfg, DataBus& b
       profile_deceleration_(cfg.profile_deceleration),
       velocity_map_(cfg.velocity_map),
       fault_retry_ms_((cfg.fault_retry_ms > 0) ? cfg.fault_retry_ms : 1000),
-      fault_max_retries_((cfg.fault_max_retries >= 0) ? cfg.fault_max_retries : 5) {
+      fault_max_retries_((cfg.fault_max_retries >= 0) ? cfg.fault_max_retries : 5),
+      stall_current_permille_(cfg.stall_current_permille),
+      stall_velocity_counts_(cfg.stall_velocity_counts),
+      stall_ms_(cfg.stall_ms) {
     left_.name = "Left";
     left_.node_id = cfg.elmo_node_left;
     right_.name = "Right";
@@ -87,7 +90,7 @@ bool SendCanCommandToElmoNode::is_drive_available(const std::string& foot, std::
     if (!sh.ready.load(std::memory_order_acquire)) {
         why = "drive not initialized yet";
     } else if (st.disabled) {
-        why = "drive disabled (emergency stop; press 'r')";
+        why = "drive disabled (emergency stop or stall guard; press 's' then 'r')";
     } else if (st.fault_active) {
         why = st.gave_up ? "drive fault, recovery gave up (press 's' then 'r', or restart)"
                          : "drive fault, recovery in progress";
@@ -154,6 +157,7 @@ void SendCanCommandToElmoNode::tick() {
         } else if (type == static_cast<int>(JobType::Recover)) {
             st->last_recovery_done = now;
             st->recovery_done_valid = true;
+            st->recovery_done_ns = now_ns();
             st->initial_park_done = false;
             std::cerr << "[send_can_command_to_elmo] " << st->name << " fault-recovery attempt "
                       << st->recovery_attempts << (ok ? " OK (drive re-armed)" : " FAILED") << '\n';
@@ -222,6 +226,16 @@ void SendCanCommandToElmoNode::tick() {
         }
         const ElmoStatus& status = (st->name == "Left") ? s.status_left : s.status_right;
         handle_fault(*st, status);
+        if (st->disabled) {
+            continue;
+        }
+        if (!st->fault_active && !sh.job_pending.load(std::memory_order_acquire)) {
+            const ElmoMotorInfo& motor = (st->name == "Left") ? s.motor_left : s.motor_right;
+            check_stall(*st, motor, s.timestamp_ns);
+            if (st->disabled) {
+                continue;
+            }
+        }
 
         const GaitPhase& gait = (st->name == "Left") ? s.gait_left : s.gait_right;
         if (gait.valid) {
@@ -237,6 +251,18 @@ void SendCanCommandToElmoNode::handle_fault(FootState& st, const ElmoStatus& sta
 
     if (!fault) {
         if (st.fault_active) {
+            // The 500 ms statusword poll can catch the drive in a transient
+            // non-fault state in the middle of the recovery sequence (e.g.
+            // 0x0250 Switch On Disabled right after the fault reset) and,
+            // seen 2026-09-15, close the episode while the Recover job was
+            // still running: recovery_attempts went back to 0 ("attempt 0
+            // FAILED") and fault_max_retries was never reached while the
+            // drive kept re-faulting. Only a statusword read after the job
+            // finished may close the episode.
+            if (sh.job_pending.load(std::memory_order_acquire) ||
+                (st.recovery_done_valid && status.timestamp_ns <= st.recovery_done_ns)) {
+                return;
+            }
             st.fault_active = false;
             st.recovery_attempts = 0;
             st.gave_up = false;
@@ -390,6 +416,112 @@ void SendCanCommandToElmoNode::disable_drive(FootState& st) {
     publish_command(st.name, 0, 4);  // 4 = drive disabled (Shutdown)
     std::cout << "[send_can_command_to_elmo] " << st.name << " disabled\n";
     std::cout.flush();
+}
+
+void SendCanCommandToElmoNode::check_stall(FootState& st, const ElmoMotorInfo& motor,
+                                           int64_t now_ns_value) {
+    if (stall_ms_ <= 0 || stall_current_permille_ <= 0) {
+        return;
+    }
+    // Feedback must be live: the TPDOs stop when the drive is off or the bus
+    // is quiet, and a stale sample must not keep the timer running.
+    const bool fresh = motor.current_valid && motor.velocity_valid && motor.velocity_demand_valid &&
+                       (now_ns_value - motor.timestamp_ns) < 500000000LL;  // 500 ms
+    const bool stalled = fresh &&
+                         std::abs(static_cast<int>(motor.current)) >= stall_current_permille_ &&
+                         std::abs(motor.velocity) <= stall_velocity_counts_ &&
+                         motor.velocity_demand == 0;
+    const auto now = std::chrono::steady_clock::now();
+    if (!stalled) {
+        st.stall_timing = false;
+        return;
+    }
+    if (!st.stall_timing) {
+        st.stall_timing = true;
+        st.stall_since = now;
+        return;
+    }
+    const auto held_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - st.stall_since).count();
+    if (held_ms < stall_ms_) {
+        return;
+    }
+    st.stall_timing = false;
+    std::cerr << "[send_can_command_to_elmo] " << st.name << " STALL GUARD: current "
+              << motor.current << " permille with velocity " << motor.velocity
+              << " counts/s and velocity demand 0 for " << held_ms
+              << " ms -- disabling the drive (Shutdown) to protect the motor."
+              << " Check the wheel; press 's' then 'r' to re-enable.\n";
+    disable_drive(st);
+    if (st.disabled) {
+        publish_command(st.name, 0, 7);  // 7 = stall guard trip
+    }
+}
+
+namespace {
+
+// Elmo SimplIQ / Gold "MF" (Motor Failure reason) bits, per the Elmo Command
+// Reference. Only the bits we are confident about are named; anything else
+// is printed as a raw bit number so the value is never lost.
+const char* elmo_mf_bit_label(int bit) {
+    switch (bit) {
+        case 2:  return "feedback loss (encoder/Hall mismatch)";
+        case 3:  return "peak current exceeded";
+        case 4:  return "inhibit input";
+        case 6:  return "two digital Halls changed at once";
+        case 7:  return "speed tracking error (ER[2])";
+        case 8:  return "position tracking error (ER[3])";
+        case 9:  return "inconsistent database";
+        case 10: return "ECAM table difference too large";
+        case 11: return "heartbeat failure";
+        case 12: return "servo drive fault (read CD for detail)";
+        case 13: return "failed to find electrical zero";
+        case 14: return "speed limit exceeded";
+        case 16: return "stack overflow";
+        case 17: return "CPU exception";
+        case 21: return "motor stuck";
+        case 28: return "over-temperature (power stage)";
+        case 29: return "timing error";
+        case 30: return "under-voltage";
+        case 31: return "over-voltage / short circuit";
+        default: return nullptr;
+    }
+}
+
+std::string decode_elmo_mf(uint32_t mf) {
+    if (mf == 0) {
+        return "no failure recorded";
+    }
+    std::string out;
+    for (int bit = 0; bit < 32; ++bit) {
+        if ((mf & (1u << bit)) == 0) continue;
+        if (!out.empty()) out += ", ";
+        const char* label = elmo_mf_bit_label(bit);
+        out += label ? label : ("bit " + std::to_string(bit) + " (see Elmo Command Reference, MF)");
+    }
+    return out;
+}
+
+}  // namespace
+
+void SendCanCommandToElmoNode::log_elmo_failure_reason(int node_id) {
+    // The fault reset (controlword bit 7) clears MF, so this runs first.
+    std::string mf_reply, ec_reply;
+    const bool have_mf = run_elmo_os_command(node_id, "MF", &mf_reply);
+    const bool have_ec = run_elmo_os_command(node_id, "EC", &ec_reply);
+    std::cerr << "[send_can_command_to_elmo] node " << node_id << " Elmo failure reason: ";
+    if (have_mf) {
+        const uint32_t mf = static_cast<uint32_t>(std::strtoul(mf_reply.c_str(), nullptr, 10));
+        std::cerr << "MF=0x" << std::hex << mf << std::dec << " (" << decode_elmo_mf(mf) << ")";
+    } else {
+        std::cerr << "MF unreadable";
+    }
+    if (have_ec) {
+        std::cerr << "; EC=" << ec_reply << " (last command error code)";
+    } else {
+        std::cerr << "; EC unreadable";
+    }
+    std::cerr << '\n';
 }
 
 void SendCanCommandToElmoNode::stop_all_drives() {
@@ -798,6 +930,11 @@ void SendCanCommandToElmoNode::initialize_elmo_driver(int node_id, bool configur
 bool SendCanCommandToElmoNode::recover_from_fault(int node_id) {
     using namespace std::chrono_literals;
     can_socket_->drain();
+
+    // Why did it trip? The EMCY code is CiA-generic (or 0xFF10 manufacturer-
+    // specific, seen at init on 2026-09-15); the drive's own MF bitmask says
+    // exactly what happened, and the fault reset below clears it.
+    log_elmo_failure_reason(node_id);
 
     // Rising edge on controlword bit 7 clears the fault; then walk the CiA-402
     // state machine back up. Mode of operation and the SD ramp survive a

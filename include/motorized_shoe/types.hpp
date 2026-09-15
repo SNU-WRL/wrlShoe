@@ -68,6 +68,9 @@ struct ElmoCommand {
     int64_t timestamp_ns = 0;
     std::string foot;
     int32_t target_velocity = 0;
+    // 0 gait-mapped, 1 fault stop + recovery, 2 external injection (slip),
+    // 4 drive disabled (Shutdown), 5 drive re-enabled, 6 park at 0 (slip
+    // mode), 7 stall-guard trip (drive disabled by check_stall).
     uint8_t command_type = 0;
     bool valid = false;
 };
