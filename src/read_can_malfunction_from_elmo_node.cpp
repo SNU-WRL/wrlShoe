@@ -43,6 +43,17 @@ const char* canopen_error_code_label(uint16_t code) {
     }
 }
 
+// CiA-301 0x81xx codes are communication-layer notices (CAN overrun, error
+// passive, recovered from bus-off, PDO length). On the Elmo drives they do NOT
+// drop the motor: on 2026-09-15 a 0x8110 arrived while the statusword still
+// read 0x1637 (Operation Enabled). Treating them as faults made the control
+// thread re-arm a healthy drive (~100 ms with the motor off). The one
+// exception is 0x8130 (heartbeat / life-guard event), which the drive is
+// configured to act on, so it stays a fault.
+bool canopen_emcy_is_warning(uint16_t code) {
+    return (code & 0xFF00) == 0x8100 && code != 0x8130;
+}
+
 ReadCanMalfunctionFromElmoNode::ReadCanMalfunctionFromElmoNode(const Config& cfg, DataBus& bus)
     : bus_(bus),
       can_socket_(std::make_unique<CANSocket>(cfg.can_elmo_interface)),
@@ -206,7 +217,15 @@ void ReadCanMalfunctionFromElmoNode::process_emcy(uint32_t node_id, const uint8_
 
     node->status.timestamp_ns = now_ns();
     node->status.valid = true;
-    if (code != 0) {
+    if (code != 0 && canopen_emcy_is_warning(code)) {
+        // Warning only: keep the code for the log / CSV column but leave
+        // `fault` to the statusword poll, which is authoritative for the
+        // drive's actual CiA-402 state. No recovery is triggered.
+        node->status.error_code = code;
+        std::cerr << "[read_can_malfunction_from_elmo] " << node->foot
+                  << " EMCY 0x" << to_hex_string(code).substr(4)
+                  << " is a communication warning, not a drive fault; no recovery\n";
+    } else if (code != 0) {
         node->status.error_code = code;
         node->status.fault = true;
         node->status.motor_enabled = false;

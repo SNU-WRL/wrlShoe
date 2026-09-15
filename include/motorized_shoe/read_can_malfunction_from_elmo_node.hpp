@@ -16,6 +16,9 @@ namespace motorized_shoe {
 // Human-readable label for a CiA-301/402 error code (EMCY / 0x603F). Returns
 // "manufacturer-specific" / "unknown" for codes outside the standard table.
 const char* canopen_error_code_label(uint16_t code);
+// True for CiA-301 0x81xx communication notices (except 0x8130 heartbeat) that
+// the drive reports without dropping the motor; they must not trigger recovery.
+bool canopen_emcy_is_warning(uint16_t code);
 
 class ReadCanMalfunctionFromElmoNode {
 public:
