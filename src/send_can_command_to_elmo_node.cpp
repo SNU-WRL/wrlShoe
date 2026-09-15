@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <sstream>
 #include <iostream>
 #include <thread>
 
@@ -460,55 +461,87 @@ void SendCanCommandToElmoNode::check_stall(FootState& st, const ElmoMotorInfo& m
 
 namespace {
 
-// Elmo SimplIQ / Gold "MF" (Motor Failure reason) bits, per the Elmo Command
-// Reference. Only the bits we are confident about are named; anything else
-// is printed as a raw bit number so the value is never lost.
-const char* elmo_mf_bit_label(int bit) {
-    switch (bit) {
-        case 2:  return "feedback loss (encoder/Hall mismatch)";
-        case 3:  return "peak current exceeded";
-        case 4:  return "inhibit input";
-        case 6:  return "two digital Halls changed at once";
-        case 7:  return "speed tracking error (ER[2])";
-        case 8:  return "position tracking error (ER[3])";
-        case 9:  return "inconsistent database";
-        case 10: return "ECAM table difference too large";
-        case 11: return "heartbeat failure";
-        case 12: return "servo drive fault (read CD for detail)";
-        case 13: return "failed to find electrical zero";
-        case 14: return "speed limit exceeded";
-        case 16: return "stack overflow";
-        case 17: return "CPU exception";
-        case 21: return "motor stuck";
-        case 28: return "over-temperature (power stage)";
-        case 29: return "timing error";
-        case 30: return "under-voltage";
-        case 31: return "over-voltage / short circuit";
-        default: return nullptr;
-    }
-}
-
+// Elmo Gold "MF" (Motor Fault) bit field, from the Command Reference for
+// Gold Line Drives (MAN-G-CR 1.406, MF command, pp. 192-195). The CAN EMCY
+// code each bit maps to is given in brackets. Bits 12-15 are a 4-bit
+// amplifier-status field, not individual flags.
 std::string decode_elmo_mf(uint32_t mf) {
     if (mf == 0) {
-        return "no failure recorded";
+        return "no failure recorded (MF=0; motor was shut off by a command, not a fault)";
     }
     std::string out;
+    auto add = [&](const std::string& s) {
+        if (!out.empty()) out += "; ";
+        out += s;
+    };
+    struct Flag { uint32_t bit; const char* label; };
+    static const Flag kFlags[] = {
+        {0x1u,        "main feedback error [7300]"},
+        {0x2u,        "commutation process failed during motor on"},
+        {0x4u,        "Hall / main feedback mismatch [7380]"},
+        {0x8u,        "current exceeded peak limit MC [8311]"},
+        {0x10u,       "external inhibit INH/ENB triggered [5441]"},
+        {0x40u,       "Hall sensor speed too high [7381]"},
+        {0x80u,       "speed tracking error ER[2] [8480]"},
+        {0x100u,      "position tracking error ER[3] [8611]"},
+        {0x800u,      "heartbeat event [8130]"},
+        {0x20000u,    "overspeed HL[2]/LL[2] [8481]"},
+        {0x200000u,   "motor stuck CL[2..4] [7121]"},
+        {0x400000u,   "feedback out of position limits HL[3]/LL[3] [8680]"},
+        {0x800000u,   "numeric overflow [FF30]"},
+        {0x1000000u,  "gantry slave disabled"},
+        {0x20000000u, "failed to start motor [FF10]: inhibit active, commutation auto-phasing "
+                      "failed, < 7.5 ms since last fault/disable, profiler conflict (EE[2]), "
+                      "or motor rotating too fast at enable (EC 168)"},
+    };
+    uint32_t seen = 0;
+    for (const Flag& f : kFlags) {
+        if (mf & f.bit) { add(f.label); seen |= f.bit; }
+    }
+    const uint32_t amp = mf & 0xF000u;
+    if (amp != 0) {
+        seen |= 0xF000u;
+        switch (amp) {
+            case 0x3000u: add("amplifier: under-voltage [3120] (bus voltage AN[6])"); break;
+            case 0x5000u: add("amplifier: over-voltage [3310] (bus voltage AN[6])"); break;
+            case 0x7000u: add("amplifier: safety input (STO) [FF20]"); break;
+            case 0xB000u: add("amplifier: short protection [2340]"); break;
+            case 0xD000u: add("amplifier: over-temperature [4310] (TI[1] = drive temperature)"); break;
+            default: {
+                std::ostringstream o; o << "amplifier status 0x" << std::hex << amp; add(o.str());
+            }
+        }
+    }
     for (int bit = 0; bit < 32; ++bit) {
-        if ((mf & (1u << bit)) == 0) continue;
-        if (!out.empty()) out += ", ";
-        const char* label = elmo_mf_bit_label(bit);
-        out += label ? label : ("bit " + std::to_string(bit) + " (see Elmo Command Reference, MF)");
+        const uint32_t b = 1u << bit;
+        if ((mf & b) && !(seen & b)) {
+            add("reserved/unknown MF bit " + std::to_string(bit));
+        }
     }
     return out;
+}
+
+// Elmo "EC" (error code of the last failed command), same manual p. 99. Only
+// the one we have met is named; everything else prints raw.
+const char* decode_elmo_ec(long ec) {
+    switch (ec) {
+        case 0:   return "no error";
+        case 168: return "SPEED_2_LARGE_2_START: motor was enabled while rotating too fast";
+        case 169: return "CPU peripheral busy / overflow";
+        default:  return nullptr;
+    }
 }
 
 }  // namespace
 
 void SendCanCommandToElmoNode::log_elmo_failure_reason(int node_id) {
-    // The fault reset (controlword bit 7) clears MF, so this runs first.
-    std::string mf_reply, ec_reply;
+    // The next motor-enable clears MF, so this runs before the fault reset.
+    // TI[1] is the drive temperature in degrees C (relevant for MF 0xD000 /
+    // EMCY 0x4310 and not available through any CiA-402 object).
+    std::string mf_reply, ec_reply, ti_reply;
     const bool have_mf = run_elmo_os_command(node_id, "MF", &mf_reply);
     const bool have_ec = run_elmo_os_command(node_id, "EC", &ec_reply);
+    const bool have_ti = run_elmo_os_command(node_id, "TI[1]", &ti_reply);
     std::cerr << "[send_can_command_to_elmo] node " << node_id << " Elmo failure reason: ";
     if (have_mf) {
         const uint32_t mf = static_cast<uint32_t>(std::strtoul(mf_reply.c_str(), nullptr, 10));
@@ -517,9 +550,14 @@ void SendCanCommandToElmoNode::log_elmo_failure_reason(int node_id) {
         std::cerr << "MF unreadable";
     }
     if (have_ec) {
-        std::cerr << "; EC=" << ec_reply << " (last command error code)";
+        const long ec = std::strtol(ec_reply.c_str(), nullptr, 10);
+        const char* label = decode_elmo_ec(ec);
+        std::cerr << "; EC=" << ec << " (" << (label ? label : "see Elmo Command Reference, EC") << ")";
     } else {
         std::cerr << "; EC unreadable";
+    }
+    if (have_ti) {
+        std::cerr << "; drive temperature TI[1]=" << ti_reply << " C";
     }
     std::cerr << '\n';
 }

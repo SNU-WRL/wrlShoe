@@ -135,9 +135,9 @@ elmo_config:
 #                stance times; a newer HS before firing cancels and reschedules.
 slip_perturbation:
   enabled: true
-  foot: "Right"
+  foot: "Left"
   slip_velocity: 150000
-  slip_duration_ms: 300
+  slip_duration_ms: 500
   mode1_delay_after_hs_ms: 0
   # Forward-slip lead before the predicted toe-off (ms).
   to_slip_lead_ms: 50
