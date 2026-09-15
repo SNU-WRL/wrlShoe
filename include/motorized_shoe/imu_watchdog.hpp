@@ -35,6 +35,8 @@ public:
         }
         check_foot("Left", s.imu_left, now, left_stale_, left_reported_);
         check_foot("Right", s.imu_right, now, right_stale_, right_reported_);
+        check_node_status("Left", s.imu_left.node_status, left_last_status_);
+        check_node_status("Right", s.imu_right.node_status, right_last_status_);
         // A foot that never sends a single frame would otherwise stay silent
         // forever (the left IMU on 2026-09-11 was dead from the start).
         if (!startup_reported_ && now - first_check_ns_ > kStartupGraceNs) {
@@ -72,6 +74,35 @@ private:
         stale_flag = stale;
     }
 
+    // Teensy status frame: report every change of the reset / timeout
+    // counters and a gyro rate that is not ~100 Hz.
+    void check_node_status(const char* foot, const ImuNodeStatus& st, ImuNodeStatus& last) {
+        if (!st.valid || st.timestamp_ns == last.timestamp_ns) {
+            return;
+        }
+        if (!last.valid) {
+            std::cerr << "[imu] " << foot << " node status online: " << st.gyro_hz
+                      << " gyro frames/s, resets " << st.resets << ", timeouts " << st.timeouts
+                      << ", tx dropped " << st.tx_dropped << "\n";
+        } else {
+            if (st.resets != last.resets) {
+                std::cerr << "[imu] " << foot << " SENSOR RESET seen by the Teensy (count "
+                          << st.resets << "); reports re-enabled\n";
+            }
+            if (st.timeouts != last.timeouts) {
+                std::cerr << "[imu] " << foot << " sensor TIMEOUT recovery by the Teensy (count "
+                          << st.timeouts << ")\n";
+            }
+            if (st.tx_dropped != last.tx_dropped) {
+                std::cerr << "[imu] Teensy CAN tx drops now " << st.tx_dropped << "\n";
+            }
+            if ((st.gyro_hz < 90 || st.gyro_hz > 110) && (last.gyro_hz >= 90 && last.gyro_hz <= 110)) {
+                std::cerr << "[imu] " << foot << " gyro rate " << st.gyro_hz << " frames/s\n";
+            }
+        }
+        last = st;
+    }
+
     static constexpr int64_t kStartupGraceNs = 3000000000LL;  // 3 s
 
     int64_t stale_ns_;
@@ -81,6 +112,8 @@ private:
     bool right_stale_ = false;
     bool left_reported_ = false;
     bool right_reported_ = false;
+    ImuNodeStatus left_last_status_;
+    ImuNodeStatus right_last_status_;
 };
 
 }  // namespace motorized_shoe

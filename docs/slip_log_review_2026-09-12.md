@@ -103,39 +103,3 @@ feedback, `status_*_word` is the 2 Hz statusword poll).
    ramp, or raise the peak-current window. Until then expect faults on a
    fully loaded foot.
 3. Watch for `[imu] ... STALE` lines; both cables/Teensys have failed.
-
-## Addendum 2026-09-13 — stance estimator robustness
-
-The forward-slip (BeforeTO) predictor was rewritten as `StanceEstimator`
-(`include/motorized_shoe/stance_estimator.hpp`), replacing the mean of the
-last two HS→TO stances with:
-
-1. plausibility windows — a stance counts only inside 300–1500 ms and only if
-   its HS→HS period is inside 600–2000 ms;
-2. prediction = median stance fraction (stance / period) of the last 3 clean
-   cycles × the median recent period, or the latest period when it differs
-   from the median by more than 15% (cadence change);
-3. a toe-off detected before the scheduled fire cancels the slip (missed
-   trial, console message) instead of firing with the foot in the air;
-4. resets on an HS gap > 2.5 s, on a gait-FSM resync (the FSM now publishes
-   an explicit `RESET` event), on a drive fault and on an emergency stop, then
-   one clean stance is required before predicting again.
-
-Offline replay of the raw right-foot gyro through the FSM and both estimators
-(grading each prediction against the actual toe-off of that cycle, lead
-50 ms, firing "in window" = 0–150 ms before the true toe-off):
-
-| log | cycles | old: in window / late / after TO / \|err\| p90 | new: in window / late / after TO / \|err\| p90 | new: no prediction |
-|---|---|---|---|---|
-| 09-10 14:43 steady | 36 | 31 / 4 / 0 / 86 ms | 31 / 4 / 0 / 91 ms | 1 |
-| 09-10 14:48 pauses | 32 | 18 / 1 / 10 / 2234 ms | 21 / 1 / 0 / 71 ms | 9 |
-| 09-11 12:40 pauses | 34 | 11 / 1 / 15 / 1244 ms | 15 / 2 / 4 / 239 ms | 8 |
-| 09-11 12:43 stumbles | 45 | 14 / 5 / 16 / 1110 ms | 20 / 3 / 8 / 738 ms | 8 |
-
-"after TO" = the true toe-off came before the fire time; the old code fired in
-swing, the new code cancels. "no prediction" = the estimator was not warm at
-that HS (right after a pause or reset) and the slip node skips to the next
-cycle with a console line. Heel-strike / toe-off detection itself is
-unchanged: the FSM event counts match the on-device counts in all ten logs.
-The remaining large errors are irregular steps and post-slip stumbles, which
-no cycle-based predictor can anticipate.

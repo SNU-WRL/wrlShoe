@@ -92,6 +92,12 @@ ERROR-ACTIVE and RX/TX packets must count up.
   `elmo_config.fault_retry_ms` up to `elmo_config.fault_max_retries` times, then
   gives up with a message (press `s` then `r`, or restart). A slip cannot be
   armed while the slip foot's drive is faulted, disabled, or busy.
+- IMU firmware: the Teensy sketch lives in `firmware/teensy_imu_can/`. It
+  re-enables reports after a BNO085 reset, recovers a silent sensor after
+  250 ms, sends each frame as its report arrives (gyro no longer waits for
+  the other reports) and emits a 1 Hz status frame per foot (`0x11F`/`0x12F`)
+  that the app logs as `imu_*_node_*` columns and reports on the console.
+  The app counts samples on the gyro frame, so it works with the old sketch too.
 - IMU watchdog: a foot whose newest IMU frame is older than `imu_stale_ms`
   (default 100) is reported STALE on the console (and in the `imu_*_age_ms`
   CSV columns); the slip app refuses to arm, and disarms, when the slip foot's

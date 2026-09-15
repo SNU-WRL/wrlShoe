@@ -13,9 +13,26 @@ inline int64_t now_ns() {
         .count();
 }
 
+// 1 Hz health frame from the Teensy IMU node (CAN id 0x11F / 0x12F, see
+// firmware/teensy_imu_can): gyro frames sent in the last second, sensor reset
+// count, timeout-recovery count, CAN tx-drop count. Older sketches never send
+// it; `valid` stays false then.
+struct ImuNodeStatus {
+    int64_t timestamp_ns = 0;
+    uint16_t gyro_hz = 0;
+    uint16_t resets = 0;
+    uint16_t timeouts = 0;
+    uint16_t tx_dropped = 0;
+    bool valid = false;
+};
+
 struct IMUData {
+    // Time of the newest gyro frame (the sample that drives the gait FSM).
+    // NOT touched by the status frame, so the staleness watchdog sees a dead
+    // sensor even while the Teensy keeps reporting on it.
     int64_t timestamp_ns = 0;
     std::string foot;
+    ImuNodeStatus node_status;
 
     float rv_r = 0.0f;
     float rv_i = 0.0f;

@@ -25,7 +25,12 @@ DataLogger::DataLogger(const std::string& path) : file_(path, std::ios::out | st
             // Appended 2026-09-12: IMU sample age at snapshot time (ms, -1 =
             // never received) and the drives' CiA-402 error code (0x603F /
             // EMCY) of the current or last fault (0 = none).
-            << "imu_left_age_ms,imu_right_age_ms,status_left_error,status_right_error"
+            << "imu_left_age_ms,imu_right_age_ms,status_left_error,status_right_error,"
+            // Appended 2026-09-13: Teensy IMU-node health (1 Hz status frame):
+            // gyro frames/s, sensor resets, timeout recoveries, CAN tx drops.
+            // All 0 with firmware that does not send the frame.
+            << "imu_left_node_hz,imu_left_node_resets,imu_left_node_timeouts,imu_left_node_tx_dropped,"
+            << "imu_right_node_hz,imu_right_node_resets,imu_right_node_timeouts,imu_right_node_tx_dropped"
           << '\n';
 
     file_ << std::fixed << std::setprecision(6);
@@ -79,7 +84,11 @@ void DataLogger::write_row(const SystemSnapshot& s) {
           << s.motor_right.position << ',' << s.motor_right.velocity << ',' << s.motor_right.current << ','
           << s.motor_right.velocity_demand << ',' << s.motor_right.current_demand << ','
           << age_ms(s.imu_left) << ',' << age_ms(s.imu_right) << ','
-          << s.status_left.error_code << ',' << s.status_right.error_code
+          << s.status_left.error_code << ',' << s.status_right.error_code << ','
+          << s.imu_left.node_status.gyro_hz << ',' << s.imu_left.node_status.resets << ','
+          << s.imu_left.node_status.timeouts << ',' << s.imu_left.node_status.tx_dropped << ','
+          << s.imu_right.node_status.gyro_hz << ',' << s.imu_right.node_status.resets << ','
+          << s.imu_right.node_status.timeouts << ',' << s.imu_right.node_status.tx_dropped
           << '\n';
 }
 

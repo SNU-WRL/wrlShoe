@@ -177,11 +177,13 @@ Config load_config(const std::string& path) {
     apply_int(kv, "imu_left_can_ids.accelerometer", cfg.imu_left_can_ids.accelerometer);
     apply_int(kv, "imu_left_can_ids.gyroscope", cfg.imu_left_can_ids.gyroscope);
     apply_int(kv, "imu_left_can_ids.magnetometer", cfg.imu_left_can_ids.magnetometer);
+    apply_int(kv, "imu_left_can_ids.status", cfg.imu_left_can_ids.status);
 
     apply_int(kv, "imu_right_can_ids.rotation_vector", cfg.imu_right_can_ids.rotation_vector);
     apply_int(kv, "imu_right_can_ids.accelerometer", cfg.imu_right_can_ids.accelerometer);
     apply_int(kv, "imu_right_can_ids.gyroscope", cfg.imu_right_can_ids.gyroscope);
     apply_int(kv, "imu_right_can_ids.magnetometer", cfg.imu_right_can_ids.magnetometer);
+    apply_int(kv, "imu_right_can_ids.status", cfg.imu_right_can_ids.status);
 
     apply_int(kv, "elmo_node_ids.left", cfg.elmo_node_left);
     apply_int(kv, "elmo_node_ids.right", cfg.elmo_node_right);
