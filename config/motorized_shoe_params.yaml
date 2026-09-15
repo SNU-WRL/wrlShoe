@@ -104,6 +104,11 @@ elmo_config:
   # Statusword SDO poll period (ms). Faults are also reported instantly via
   # the drive's EMCY frame, so this is only the fallback / clear detection.
   status_poll_ms: 500
+  # SYNC period (ms) for the motor-feedback TPDOs. 1 = one SYNC per 1 kHz
+  # tick (~5000 frames/s on can0: both drives overran their CAN receiver,
+  # EMCY 0x8110, ~1/s on 2026-09-15). 2 halves the bus load (500 Hz motor
+  # feedback). Raise to 4 if 0x8110 warnings still appear.
+  sync_period_ms: 2
   # Fault recovery (runs on the command node's worker thread, never blocks
   # the 1 kHz loop): if the drive still reports a fault this long after a
   # recovery attempt finished, retry, up to fault_max_retries per episode.

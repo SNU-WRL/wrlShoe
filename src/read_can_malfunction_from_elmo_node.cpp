@@ -1,5 +1,6 @@
 #include "motorized_shoe/read_can_malfunction_from_elmo_node.hpp"
 
+#include <algorithm>
 #include <iostream>
 
 namespace motorized_shoe {
@@ -58,7 +59,15 @@ ReadCanMalfunctionFromElmoNode::ReadCanMalfunctionFromElmoNode(const Config& cfg
     : bus_(bus),
       can_socket_(std::make_unique<CANSocket>(cfg.can_elmo_interface)),
       last_status_request_(std::chrono::steady_clock::now()),
-      status_poll_ms_((cfg.status_poll_ms > 0) ? cfg.status_poll_ms : 500) {
+      status_poll_ms_((cfg.status_poll_ms > 0) ? cfg.status_poll_ms : 500),
+      sync_every_ticks_(1) {
+    // SYNC divider: elmo_sync_period_ms expressed in control-loop ticks.
+    const int loop_hz = (cfg.loop_frequency_hz > 0) ? cfg.loop_frequency_hz : 1000;
+    const int period_ms = (cfg.elmo_sync_period_ms > 0) ? cfg.elmo_sync_period_ms : 1;
+    sync_every_ticks_ = std::max(1, (period_ms * loop_hz + 500) / 1000);
+    std::cout << "[read_can_malfunction_from_elmo] SYNC every " << sync_every_ticks_
+              << " tick(s) (" << period_ms << " ms requested at " << loop_hz
+              << " Hz): motor feedback at " << (loop_hz / sync_every_ticks_) << " Hz\n";
     elmo_nodes_.push_back({cfg.elmo_node_left, "Left", ElmoStatus{}, false});
     elmo_nodes_.push_back({cfg.elmo_node_right, "Right", ElmoStatus{}, false});
     for (auto& n : elmo_nodes_) {
@@ -109,8 +118,12 @@ void ReadCanMalfunctionFromElmoNode::tick() {
     }
 
     // Trigger the next round of feedback TPDOs. The drives transmit on receipt;
-    // those frames are drained at the top of the next tick.
-    send_sync();
+    // those frames are drained at the top of the next tick. Rate-limited by
+    // elmo_sync_period_ms: at one SYNC per 1 kHz tick both drives overran
+    // their CAN receiver (EMCY 0x8110, ~1/s).
+    if ((tick_count_++ % static_cast<uint64_t>(sync_every_ticks_)) == 0) {
+        send_sync();
+    }
 }
 
 void ReadCanMalfunctionFromElmoNode::send_sync() {

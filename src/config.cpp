@@ -191,6 +191,7 @@ Config load_config(const std::string& path) {
     apply_int(kv, "loop_frequency", cfg.loop_frequency_hz);
     apply_int(kv, "imu_stale_ms", cfg.imu_stale_ms);
     apply_int(kv, "elmo_config.status_poll_ms", cfg.status_poll_ms);
+    apply_int(kv, "elmo_config.sync_period_ms", cfg.elmo_sync_period_ms);
     apply_int(kv, "elmo_config.fault_retry_ms", cfg.fault_retry_ms);
     apply_int(kv, "elmo_config.fault_max_retries", cfg.fault_max_retries);
 

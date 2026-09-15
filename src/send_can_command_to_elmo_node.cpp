@@ -35,7 +35,7 @@ SendCanCommandToElmoNode::SendCanCommandToElmoNode(const Config& cfg, DataBus& b
 
     // This socket is written from the control thread (target velocity,
     // controlword) and read only by the worker during SDO exchanges. Without a
-    // filter it would also collect the 4 kHz TPDO stream it never looks at.
+    // filter it would also collect the TPDO feedback stream it never looks at.
     can_socket_->set_filters({{0x580, 0x780}});
 
     // The blocking ELMO bring-up runs on the worker so the control loop and

@@ -55,9 +55,12 @@ private:
 
     // Motor feedback arrives via SYNC-triggered TPDOs (configured at init):
     //   TPDO1 (0x180+id): position + velocity   TPDO2 (0x280+id): current
-    // We emit one SYNC per tick (1 kHz); the drives' TPDOs from the previous
-    // SYNC are drained at the top of the next tick. Per-node working copies
+    // We emit one SYNC every sync_every_ticks_ ticks (elmo_sync_period_ms
+    // at loop_frequency_hz); the drives' TPDOs from the previous SYNC are
+    // drained at the top of the next tick. Per-node working copies
     // accumulate the fields and are republished on each update.
+    int sync_every_ticks_;
+    uint64_t tick_count_ = 0;
     ElmoMotorInfo motor_left_;
     ElmoMotorInfo motor_right_;
 };

@@ -125,12 +125,17 @@ ERROR-ACTIVE and RX/TX packets must count up.
   `0x60FF` target velocity we send and from the actual feedback above, and they
   ride in TPDO2's spare bytes, so they add no extra bus traffic.
   The TPDOs are transmission type 1 (on every SYNC). `read_can_malfunction_from_elmo_node`
-  emits one SYNC (`0x80`) per control-loop tick (1 kHz), so feedback updates at
-  1 kHz; it parses the TPDOs into `motor_{left,right}_{position,velocity,current,velocity_demand,current_demand}`.
-  The CSV logger writes every tick, so the log captures this at the full 1 kHz.
+  emits one SYNC (`0x80`) every `elmo_config.sync_period_ms` (default 2 ms, i.e.
+  every other 1 kHz tick), so feedback updates at 500 Hz; it parses the TPDOs into
+  `motor_{left,right}_{position,velocity,current,velocity_demand,current_demand}`.
+  The CSV logger writes every tick; motor columns repeat between SYNCs.
   Statusword stays on a slow SDO poll (`elmo_config.status_poll_ms`, default
-  500 ms) for fault detection; EMCY frames give immediate fault notification. Bus cost on can0: SYNC + 2 TPDOs × 2 drives at 1 kHz
-  ≈ ~45% of a 1 Mbit/s bus; the IMU is on a separate bus (can1). No per-value
+  500 ms) for fault detection; EMCY frames give immediate fault notification.
+  Bus cost on can0: SYNC + 2 TPDOs × 2 drives is ~5000 frames/s at 1 ms, and
+  each drive must also receive the other drive's TPDOs; at that rate both drives
+  reported EMCY 0x8110 (CAN overrun, logged as a warning, no recovery) about once
+  a second (2026-09-15). 2 ms halves it; raise `sync_period_ms` if 0x8110 keeps
+  appearing. The IMU is on a separate bus (can1). No per-value
   SDO request frames. Drive temperature is not logged (no portable CiA-402
   object — needs the ELMO-specific index). PDO config is sent fresh on every
   init (volatile); it is not stored to drive flash.

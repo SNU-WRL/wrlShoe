@@ -93,6 +93,14 @@ struct Config {
     // ELMO statusword SDO poll period (ms). Faults are additionally reported
     // immediately via the drive's EMCY frame, so this poll is the fallback.
     int status_poll_ms = 500;
+    // SYNC period (ms) for the motor-feedback TPDOs. Every SYNC makes each
+    // drive transmit two TPDOs, and each drive also has to receive the other
+    // drive's TPDOs plus the SYNC. At 1 ms (the loop period) that was ~5000
+    // frames/s on can0 and both drives reported EMCY 0x8110 (CAN overrun)
+    // about once a second on 2026-09-15. 2 ms halves the load; raise it
+    // further if 0x8110 keeps appearing. Feedback / CSV motor columns update
+    // at 1000 / sync_period_ms Hz.
+    int elmo_sync_period_ms = 2;
     // Fault recovery: if a drive still reports a fault this long after a
     // recovery attempt completed, the recovery is retried, up to
     // fault_max_retries times per fault episode.
