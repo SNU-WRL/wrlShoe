@@ -59,7 +59,7 @@ gait_detection:
   # and the swing dwell gate.
   thresholds:
     hs_threshold: -1.3963       # heel-strike gyro_z negative peak
-    to_threshold: -2.0944       # toe-off gyro_z negative peak
+    to_threshold: -1.75         # toe-off gyro_z negative peak (-2.0944 until 2026-09-17; see hs_contact_detection note)
     # Minimum dwell in Swing before a heel strike may fire, so the HS negative-peak
     # detector cannot latch onto an early-swing gyro dip.
     min_swing_dwell_ms: 330
@@ -83,6 +83,40 @@ gait_detection:
   # Moving-average window (samples) on gyro_z feeding the FSM. The (window-1)/2-
   # sample group delay is compensated for in back-dated event timestamps.
   ma_window: 5
+  # Contact heel-strike detection (code default OFF = trough-recovery detector
+  # above; ON here since 2026-09-17, together with to_threshold -1.75).
+  # Why: on the 2026-09-15 logs the trough detector declared HS at foot-flat,
+  # median 250 ms after the first ground contact (24 AfterHS slips), and ran
+  # phase-inverted for 15% of HS events (5 of 24 slips fired at toe-off): one
+  # weak trough flips the Stance/Swing parity until a >2 s pause.
+  # When true: HS requires swing evidence (raw gyro_z > swing_gyro_min for
+  # swing_min_ms), then fires on the first of a contact impact (accel change
+  # >= jerk_threshold m/s^2 between consecutive samples, once gyro_z is
+  # jerk_gyro_drop below its swing peak and jerk_holdoff_ms after the evidence)
+  # or raw gyro_z < 0. The HS event time is the firing sample (not back-dated),
+  # so measured stance times grow by ~100-150 ms vs the old detector. TO arms
+  # only after foot-flat (|filtered gyro_z| < flat_gyro_max for flat_min_ms, or
+  # settle_timeout_ms after HS). A flat foot for flat_reset_ms while in Swing
+  # = missed landing -> RESET. hs_threshold, min_swing_dwell_ms and the accel
+  # veto are unused in this mode. to_threshold: with this mode on, replay
+  # (docs/to_detection_assessment_2026-09-17.txt) favours -1.75: missed
+  # push-offs 57 -> 33 of 807 (12 of those are recovery steps during a slip),
+  # HS results unchanged; -1.5 starts taking slap troughs for toe-offs. Do
+  # NOT keep -1.75 with hs_contact_detection false (go back to -2.0944): at
+  # -1.75 the old detector gets worse (right foot HS at toe-off 26 -> 64, missed push-offs 86 -> 126).
+  # Replay before retuning:
+  #   build/gait_fsm_replay config/motorized_shoe_params.yaml <log.csv> ...
+  hs_contact_detection: true
+  hs_contact:
+    swing_gyro_min: 1.5
+    swing_min_ms: 50
+    jerk_threshold: 8.0
+    jerk_gyro_drop: 0.5
+    jerk_holdoff_ms: 100
+    flat_gyro_max: 0.5
+    flat_min_ms: 100
+    settle_timeout_ms: 400
+    flat_reset_ms: 200
   # DEPRECATED: gravity estimation is no longer on the FSM path (the gyro-only
   # two-state machine doesn't use free acceleration). Parsed but unused.
   gravity_calib_samples: 60
@@ -135,8 +169,8 @@ elmo_config:
 #                stance times; a newer HS before firing cancels and reschedules.
 slip_perturbation:
   enabled: true
-  foot: "Left"
-  slip_velocity: 150000
+  foot: "Right"
+  slip_velocity: 200000
   slip_duration_ms: 500
   mode1_delay_after_hs_ms: 0
   # Forward-slip lead before the predicted toe-off (ms).

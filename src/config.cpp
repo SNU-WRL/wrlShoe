@@ -225,6 +225,16 @@ Config load_config(const std::string& path) {
 
     apply_int(kv, "gait_detection.state_timeout_ms", cfg.gait_state_timeout_ms);
     apply_int(kv, "gait_detection.ma_window", cfg.gait_ma_window);
+    apply_bool(kv, "gait_detection.hs_contact_detection", cfg.gait_hs_contact_detection);
+    apply_float(kv, "gait_detection.hs_contact.swing_gyro_min", cfg.gait_hs_contact.swing_gyro_min);
+    apply_int(kv, "gait_detection.hs_contact.swing_min_ms", cfg.gait_hs_contact.swing_min_ms);
+    apply_float(kv, "gait_detection.hs_contact.jerk_threshold", cfg.gait_hs_contact.jerk_threshold);
+    apply_float(kv, "gait_detection.hs_contact.jerk_gyro_drop", cfg.gait_hs_contact.jerk_gyro_drop);
+    apply_int(kv, "gait_detection.hs_contact.jerk_holdoff_ms", cfg.gait_hs_contact.jerk_holdoff_ms);
+    apply_float(kv, "gait_detection.hs_contact.flat_gyro_max", cfg.gait_hs_contact.flat_gyro_max);
+    apply_int(kv, "gait_detection.hs_contact.flat_min_ms", cfg.gait_hs_contact.flat_min_ms);
+    apply_int(kv, "gait_detection.hs_contact.settle_timeout_ms", cfg.gait_hs_contact.settle_timeout_ms);
+    apply_int(kv, "gait_detection.hs_contact.flat_reset_ms", cfg.gait_hs_contact.flat_reset_ms);
     apply_int(kv, "gait_detection.gravity_calib_samples", cfg.gravity_calib_samples);
 
     for (const char* phase : {"Stance", "Swing"}) {

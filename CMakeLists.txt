@@ -72,3 +72,10 @@ add_executable(disable_elmo_drive
 )
 
 target_link_libraries(disable_elmo_drive pthread)
+
+# Offline gait-FSM replay against logged IMU samples (no CAN, no hardware).
+add_executable(gait_fsm_replay
+  tools/gait_fsm_replay.cpp
+  src/gait_fsm.cpp
+  src/config.cpp
+)
