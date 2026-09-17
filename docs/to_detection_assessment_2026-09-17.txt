@@ -1,0 +1,47 @@
+# scripts/assess_to_detection.py on the 2026-09-15 logs, to_threshold -2.0944 (2026-09-17)
+===== Left
+  on-ground lower bound zc->trough     n=351 median   +951  p10   +840  p90  +1122  min   +331 max  +1652
+    slap: zc->flat                     n=351 median     +0  p10     +0  p90   +131  min     +0 max   +190
+    foot-flat |gz|<0.3                 n=351 median   +720  p10   +561  p90   +941  min   +141 max  +1552
+    heel-rise+push-off: flat->trough   n=351 median   +180  p10   +110  p90   +239  min    +30 max   +531
+  swing: trough->zc                    n=351 median   +431  p10   +341  p90   +481  min   +150 max   +611
+  cycle zc->zc                         n=351 median  +1382  p10  +1221  p90  +1572  min   +741 max  +2073
+  stance % lower bound                 n=351 median    +69  p10    +66  p90    +75  min    +45 max    +88
+  -- old : ref push-offs 404, missed 67, TO events not at a push-off 31
+  old TO detect - raw trough           n=337 median    +50  p10    +40  p90    +60  min    +29 max   +190
+  old TO stamp  - raw trough           n=337 median    -10  p10    -13  p90     +0  min    -20 max    +90
+  old TO detect - swing>1.5 onset      n=337 median    -10  p10    -69  p90     +0  min   -210 max    +11
+        old no swing after (turn/shuffle/stand) 5 [('164042', 18.52), ('200611', 53.61), ('200611', 57.81), ('203549', 72.36)]
+        old weak swing after 10 [('182914', 27.25), ('200611', 72.5), ('200951', 38.06), ('201133', 34.44)]
+        old slap trough (HS<500ms ago) 16 [('200611', 52.22), ('200611', 54.98), ('200611', 56.41), ('200611', 59.2)]
+  -- contact : ref push-offs 404, missed 26, TO events not at a push-off 10
+  contact TO detect - raw trough       n=378 median    +50  p10    +40  p90    +60  min    +29 max   +190
+  contact TO stamp  - raw trough       n=378 median    -10  p10    -13  p90     +0  min    -20 max    +90
+  contact TO detect - swing>1.5 onset  n=378 median    -10  p10    -69  p90     +0  min   -210 max    +11
+        contact weak swing after 9 [('182914', 27.25), ('200951', 38.06), ('201133', 34.44), ('201219', 87.89)]
+        contact no swing after (turn/shuffle/stand) 1 [('203549', 109.8)]
+  contact-mode missed push-offs: filtered trough depths [-6.0, -5.6, -4.9, -4.7, -4.5, -4.4, -4.4, -3.9, -3.5, -3.4, -3.0, -2.9, -2.3, -2.0, -2.0, -2.0, -2.0, -2.0, -1.9, -1.9, -1.8, -1.8, -1.6, -1.6, -1.4, -0.8]
+===== Right
+  on-ground lower bound zc->trough     n=363 median   +929  p10   +809  p90  +1128  min   +649 max  +1749
+    slap: zc->flat                     n=363 median    +90  p10     +0  p90   +159  min     +0 max   +220
+    foot-flat |gz|<0.3                 n=363 median   +640  p10   +470  p90   +910  min   +350 max  +1678
+    heel-rise+push-off: flat->trough   n=363 median   +210  p10   +120  p90   +289  min    +40 max   +360
+  swing: trough->zc                    n=362 median   +470  p10   +380  p90   +530  min   +199 max   +631
+  cycle zc->zc                         n=362 median  +1399  p10  +1259  p90  +1609  min   +948 max  +2108
+  stance % lower bound                 n=362 median    +66  p10    +63  p90    +72  min    +57 max    +89
+  -- old : ref push-offs 403, missed 86, TO events not at a push-off 45
+  old TO detect - raw trough           n=317 median    +50  p10    +40  p90    +90  min    -40 max   +140
+  old TO stamp  - raw trough           n=317 median    -10  p10    -20  p90    +10  min   -100 max    +80
+  old TO detect - swing>1.5 onset      n=317 median    -30  p10    -91  p90    -10  min   -279 max     +0
+        old weak swing after 2 [('200611', 78.33), ('204316', 55.86)]
+        old slap trough (HS<500ms ago) 18 [('200951', 81.31), ('200951', 82.66), ('200951', 84.07), ('201219', 33.29)]
+        old no swing after (turn/shuffle/stand) 21 [('201219', 78.61), ('203549', 13.75), ('203549', 15.29), ('203549', 16.8)]
+        old during/after slip 4 [('203549', 20.77), ('204016', 72.92), ('204016', 94.02), ('204316', 5.92)]
+  -- contact : ref push-offs 403, missed 31, TO events not at a push-off 7
+  contact TO detect - raw trough       n=372 median    +50  p10    +40  p90    +90  min    -40 max   +140
+  contact TO stamp  - raw trough       n=372 median    -10  p10    -20  p90    +10  min   -100 max    +80
+  contact TO detect - swing>1.5 onset  n=372 median    -30  p10    -99  p90    -10  min   -279 max     +0
+        contact weak swing after 2 [('200611', 78.33), ('204316', 55.86)]
+        contact no swing after (turn/shuffle/stand) 4 [('201219', 78.61), ('203549', 13.75), ('204240', 5.54), ('204316', 1.78)]
+        contact during/after slip 1 [('204016', 94.02)]
+  contact-mode missed push-offs: filtered trough depths [-3.4, -2.1, -2.1, -2.1, -2.0, -2.0, -1.9, -1.9, -1.9, -1.9, -1.9, -1.9, -1.8, -1.8, -1.8, -1.8, -1.8, -1.7, -1.7, -1.7, -1.7, -1.6, -1.6, -1.6, -1.5, -1.5, -1.5, -1.5, -1.2, -1.2, -1.0]

@@ -16,6 +16,7 @@ GaitPhaseDetectionNode::GaitPhaseDetectionNode(const Config& cfg, DataBus& bus)
         fsm->set_hs_accel_veto(cfg.gait_thresholds.hs_accel_veto,
                                cfg.gait_thresholds.hs_impact_threshold);
         fsm->set_filter_window(cfg.gait_ma_window);
+        fsm->set_contact_hs(cfg.gait_hs_contact_detection, cfg.gait_hs_contact);
     }
 }
 
@@ -34,17 +35,12 @@ void GaitPhaseDetectionNode::tick() {
 }
 
 void GaitPhaseDetectionNode::process(const IMUData& imu, GaitEventFSM& fsm, const char* foot) {
-    // Raw acceleration norm (gravity NOT removed). Only consumed by the optional
-    // HS impact veto, where the impact spike (~30-40 m/s^2) dwarfs gravity.
-    const float raw_accel_norm =
-        std::sqrt(imu.ax * imu.ax + imu.ay * imu.ay + imu.az * imu.az);
-
     const float foot_angle = std::atan2(
         2.0f * (imu.rv_r * imu.rv_j + imu.rv_i * imu.rv_k),
         1.0f - 2.0f * (imu.rv_j * imu.rv_j + imu.rv_k * imu.rv_k));
 
     const auto event =
-        fsm.check_state_transition(imu.gz, raw_accel_norm, foot_angle, imu.timestamp_ns);
+        fsm.check_state_transition(imu.gz, imu.ax, imu.ay, imu.az, foot_angle, imu.timestamp_ns);
 
     GaitPhase gait;
     // For a detected event use its back-dated timestamp so downstream consumers

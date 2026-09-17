@@ -1,0 +1,62 @@
+== harness fidelity (old-mode replay vs FSM transitions in the logs, +-15 ms)
+   logged 1455, reproduced 1455, replay produced 1969
+
+== Left foot, old detector
+   reference landings 399 | HS events 352 | landings missed 61 | HS at toe-off 12 | other unmatched HS 7 | HS pairs < 400 ms apart 0
+   TO events 368, of which not followed by a swing 58
+   HS detect - first contact (jerk, else zc): n=338  median  +160  p10  -220  p90  +220  min  -400  max  +441 ms
+   HS detect - gyro zero-cross            : n=338  median  +120  p10  -260  p90  +160  min  -400  max  +400 ms
+   HS detect - wheel kick (independent)   : n=306  median  +132  p10  -200  p90  +218  min  -421  max  +362 ms
+   stance seen by the estimator (TO - HS stamps): n=317  median  +881  p10  +760  p90 +1041  min  +331  max +1491 ms
+
+== Left foot, contact detector
+   reference landings 399 | HS events 399 | landings missed 6 | HS at toe-off 0 | other unmatched HS 7 | HS pairs < 400 ms apart 0
+   TO events 388, of which not followed by a swing 42
+   HS detect - first contact (jerk, else zc): n=393  median    +0  p10    +0  p90    +0  min  -385  max  +360 ms
+   HS detect - gyro zero-cross            : n=393  median   -21  p10  -100  p90    +0  min  -385  max    +0 ms
+   HS detect - wheel kick (independent)   : n=335  median    +0  p10   -94  p90   +19  min  -381  max  +197 ms
+   stance seen by the estimator (TO - HS stamps): n=347  median  +991  p10  +861  p90 +1161  min  +321  max +1472 ms
+
+== Right foot, old detector
+   reference landings 403 | HS events 351 | landings missed 77 | HS at toe-off 26 | other unmatched HS 1 | HS pairs < 400 ms apart 0
+   TO events 361, of which not followed by a swing 51
+   HS detect - first contact (jerk, else zc): n=326  median  +150  p10   +89  p90  +260  min  -400  max  +380 ms
+   HS detect - gyro zero-cross            : n=326  median  +131  p10   +79  p90  +170  min  -400  max  +300 ms
+   HS detect - wheel kick (independent)   : n=167  median  +122  p10   +52  p90  +262  min  -438  max  +392 ms
+   stance seen by the estimator (TO - HS stamps): n=316  median  +849  p10  +539  p90 +1029  min  +440  max +1498 ms
+
+== Right foot, contact detector
+   reference landings 403 | HS events 402 | landings missed 1 | HS at toe-off 0 | other unmatched HS 2 | HS pairs < 400 ms apart 0
+   TO events 378, of which not followed by a swing 14
+   HS detect - first contact (jerk, else zc): n=402  median    +0  p10    +0  p90    +0  min  -300  max   +19 ms
+   HS detect - gyro zero-cross            : n=402  median    +0  p10  -119  p90    +0  min  -311  max    +0 ms
+   HS detect - wheel kick (independent)   : n=191  median   -23  p10  -116  p90   +10  min  -178  max   +57 ms
+   stance seen by the estimator (TO - HS stamps): n=339  median  +949  p10  +829  p90 +1108  min  +320  max +1489 ms
+
+== triggered AfterHS slips: logged fire vs where the contact detector fires
+   log    foot  t_fire   fired at            fire-contact  contact-det - contact (ms)
+   182914 Left    19.30  landing             +110          +0
+   200951 Right   22.07  landing             +149          +0
+   200951 Right   66.36  landing             +210          +0
+   201219 Right   15.34  landing             +160          +0
+   201219 Right   27.79  landing             +300          +0
+   201219 Right   52.42  landing             +179          +0
+   203549 Right   20.28  TOE-OFF (inverted)  None          no contact HS here
+   203549 Right   31.54  landing             +180          +0
+   203549 Right   49.30  landing             +300          +0
+   203549 Right   65.93  landing             +270          +0
+   203549 Right   97.16  landing             +290          +0
+   203549 Right  108.86  landing             +250          +0
+   204016 Right   14.23  landing             +240          +0
+   204016 Right   28.72  landing             +149          +0
+   204016 Right   58.73  landing             +200          +0
+   204016 Right   72.31  TOE-OFF (inverted)  None          no contact HS here
+   204016 Right   84.35  landing             +280          +0
+   204016 Right   93.42  TOE-OFF (inverted)  None          no contact HS here
+   204016 Right  104.30  TOE-OFF (inverted)  None          no contact HS here
+   204316 Right    5.31  TOE-OFF (inverted)  None          no contact HS here
+   204316 Right   15.38  landing             +250          +0
+   204316 Right   33.16  landing             +280          +0
+   204316 Right   46.30  landing             +309          +0
+   204316 Right   78.67  landing             +260          +0
+   204316 Right   87.33  landing             +220          +0

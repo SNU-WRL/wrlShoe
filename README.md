@@ -143,3 +143,12 @@ ERROR-ACTIVE and RX/TX packets must count up.
   SDO request frames. Drive temperature is not logged (no portable CiA-402
   object — needs the ELMO-specific index). PDO config is sent fresh on every
   init (volatile); it is not stored to drive flash.
+- Heel-strike detection: `gait_detection.hs_contact_detection: true` switches the
+  gait FSM from the trough-recovery HS (fires at foot-flat, ~250 ms after the
+  first ground contact, and can run phase-inverted so an AfterHS slip fires at
+  toe-off) to a swing-gated contact trigger (accel sample-to-sample change or
+  gyro zero-cross); parameters in `gait_detection.hs_contact`. Default is off.
+  Replay any change against logs before using it on hardware:
+  `build/gait_fsm_replay config/motorized_shoe_params.yaml *_log.csv > events.csv`
+  then `scripts/eval_hs_replay.py --ref-swing-min 1.5 events.csv *_log.csv`.
+  The 2026-09-15 result is in `docs/hs_contact_detection_replay_2026-09-17.txt`.

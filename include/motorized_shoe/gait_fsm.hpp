@@ -44,6 +44,45 @@ public:
     // fragility. Default off.
     void set_hs_accel_veto(bool enabled, float impact_threshold);
 
+    // Contact heel-strike mode (default off = the trough-recovery detector above).
+    // Motivation (2026-09-15 logs, 24 AfterHS slips): the trough detector
+    // declares HS when the filtered gyro climbs back above hs_threshold AFTER
+    // the foot-slap trough, i.e. at foot-flat, median 250 ms after the first
+    // ground contact; and because state parity is the only thing telling an HS
+    // trough from a TO trough, one weak trough inverts the machine until a >2 s
+    // pause (15% of HS events, 5 of 24 slips fired at toe-off).
+    // When enabled:
+    //   * HS needs swing evidence first: raw gyro_z > swing_gyro_min (rad/s)
+    //     for swing_min_ms. A push-off trough is preceded by a flat foot, so it
+    //     can never be taken for a heel strike. Swing evidence seen while the
+    //     machine still says Stance (missed toe-off) moves it to Swing with a
+    //     "SWING" event instead of leaving it inverted.
+    //   * HS then fires, stamped with the firing sample's own time, on the
+    //     first of (a) a contact impact: |a_k - a_(k-1)| >= jerk_threshold
+    //     (m/s^2 per sample; 10-50 at contact vs 1-3 in swing, unlike the
+    //     |accel| norm that swing shake exceeds) once gyro_z has fallen
+    //     jerk_gyro_drop below its swing peak and jerk_holdoff_ms after the
+    //     swing evidence, or (b) raw gyro_z < 0 (start of the foot-down
+    //     rotation). min_swing_dwell_ms and the accel veto are not used.
+    //   * The TO trough detector and the swing-evidence counter only arm once
+    //     the stance has settled: |filtered gyro_z| < flat_gyro_max for
+    //     flat_min_ms, or settle_timeout_ms after HS. HS now precedes the slap
+    //     trough, which would otherwise be taken for the toe-off.
+    //   * Swing with a flat foot for flat_reset_ms means the landing was
+    //     missed (weak step): drop to Stance with a "RESET" event.
+    struct ContactHsParams {
+        float swing_gyro_min = 1.5f;
+        int swing_min_ms = 50;
+        float jerk_threshold = 8.0f;
+        float jerk_gyro_drop = 0.5f;
+        int jerk_holdoff_ms = 100;
+        float flat_gyro_max = 0.5f;
+        int flat_min_ms = 100;
+        int settle_timeout_ms = 400;
+        int flat_reset_ms = 200;
+    };
+    void set_contact_hs(bool enabled, const ContactHsParams& params);
+
     // Moving-average window (samples) on gyro_z. window <= 1 disables filtering.
     // The (window-1)/2-sample group delay is compensated for when back-dating
     // event timestamps.
@@ -59,14 +98,17 @@ public:
         // filter group delay), not the sample on which the event was declared.
         int64_t event_timestamp_ns = 0;
         // "TO" or "HS" on the firing sample, "RESET" when the resync guard
-        // dropped the machine back to Stance, "" otherwise. The slip node
+        // dropped the machine back to Stance, "SWING" (contact-HS mode only) when
+        // swing evidence moved it to Swing without a toe-off event (no usable
+        // TO time; consumers ignore it), "" otherwise. The slip node
         // consumes these labels directly (HS = backward/AfterHS anchor + stance
         // estimator; TO = stance estimator only; RESET = estimator reset).
         const char* event_label = "";
     };
 
-    GaitEvent check_state_transition(float gyro_z, float raw_accel_norm, float foot_angle,
-                                     int64_t timestamp_ns);
+    // accel_* is the RAW accelerometer vector in m/s^2 (gravity NOT removed).
+    GaitEvent check_state_transition(float gyro_z, float accel_x, float accel_y, float accel_z,
+                                     float foot_angle, int64_t timestamp_ns);
 
 private:
     // Threshold-bracketed negative-peak detector. `threshold` is negative. The
@@ -120,6 +162,27 @@ private:
 
     // Per-swing dwell counter; reset on the Stance->Swing (TO) transition.
     int swing_samples_ = 0;
+
+    // Contact heel-strike mode (see set_contact_hs).
+    GaitEvent step_contact_hs(GaitEvent event, float gyro_raw, float gyro_f, float jerk,
+                            int64_t timestamp_ns);
+    void enter_swing_contact();
+    static int ms_to_samples(int ms, float fs);
+    bool contact_hs_ = false;
+    ContactHsParams contact_;
+    int swing_run_needed_ = 5;
+    int jerk_holdoff_samples_ = 10;
+    int flat_min_samples_ = 10;
+    int settle_timeout_samples_ = 40;
+    int flat_reset_samples_ = 20;
+    bool have_prev_accel_ = false;
+    float prev_accel_[3] = {0.0f, 0.0f, 0.0f};
+    int swing_gyro_run_ = 0;        // consecutive samples above swing_gyro_min
+    bool swing_evidence_ = false;   // this Swing has shown real swing rotation
+    int evidence_samples_ = 0;      // samples since the evidence was established
+    float swing_peak_ = 0.0f;       // largest raw gyro_z since the evidence
+    bool stance_settled_ = true;    // foot-flat seen (or timed out) since HS
+    int flat_run_ = 0;              // consecutive |filtered gyro_z| < flat_gyro_max
 };
 
 }  // namespace motorized_shoe

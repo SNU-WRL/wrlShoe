@@ -1,6 +1,7 @@
 #include "motorized_shoe/gait_fsm.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <numeric>
 
 namespace motorized_shoe {
@@ -35,6 +36,21 @@ void GaitEventFSM::set_state_timeout_ms(int ms) {
 void GaitEventFSM::set_hs_accel_veto(bool enabled, float impact_threshold) {
     hs_accel_veto_ = enabled;
     hs_impact_threshold_ = impact_threshold;
+}
+
+int GaitEventFSM::ms_to_samples(int ms, float fs) {
+    const int n = static_cast<int>(static_cast<float>(ms) * fs / 1000.0f + 0.5f);
+    return (n > 0) ? n : 1;
+}
+
+void GaitEventFSM::set_contact_hs(bool enabled, const ContactHsParams& params) {
+    contact_hs_ = enabled;
+    contact_ = params;
+    swing_run_needed_ = ms_to_samples(params.swing_min_ms, fs_);
+    jerk_holdoff_samples_ = ms_to_samples(params.jerk_holdoff_ms, fs_);
+    flat_min_samples_ = ms_to_samples(params.flat_min_ms, fs_);
+    settle_timeout_samples_ = ms_to_samples(params.settle_timeout_ms, fs_);
+    flat_reset_samples_ = ms_to_samples(params.flat_reset_ms, fs_);
 }
 
 void GaitEventFSM::set_filter_window(int window) {
@@ -72,12 +88,27 @@ bool GaitEventFSM::update_peak(PeakDetector& d, float value, int64_t ts, float t
     return false;
 }
 
-GaitEventFSM::GaitEvent GaitEventFSM::check_state_transition(float gyro_z, float raw_accel_norm,
+GaitEventFSM::GaitEvent GaitEventFSM::check_state_transition(float gyro_z, float accel_x,
+                                                            float accel_y, float accel_z,
                                                             float foot_angle, int64_t timestamp_ns) {
-    // gyro_z in rad/s, raw_accel_norm in m/s^2 (gravity NOT removed; only used by
-    // the optional HS impact veto). Thresholds are in rad/s. foot_angle is computed
-    // by the caller but currently unused.
+    // gyro_z in rad/s, accel_* in m/s^2 (gravity NOT removed; the norm feeds the
+    // optional HS impact veto, the sample-to-sample change feeds the contact-HS
+    // contact trigger). Thresholds are in rad/s. foot_angle is computed by the
+    // caller but currently unused.
     (void)foot_angle;
+    const float raw_accel_norm =
+        std::sqrt(accel_x * accel_x + accel_y * accel_y + accel_z * accel_z);
+    float jerk = 0.0f;
+    if (have_prev_accel_) {
+        const float dx = accel_x - prev_accel_[0];
+        const float dy = accel_y - prev_accel_[1];
+        const float dz = accel_z - prev_accel_[2];
+        jerk = std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    prev_accel_[0] = accel_x;
+    prev_accel_[1] = accel_y;
+    prev_accel_[2] = accel_z;
+    have_prev_accel_ = true;
 
     // Single-foot right side is on the bench; the Left-foot gyro sign flip is
     // preserved for symmetry.
@@ -122,6 +153,10 @@ GaitEventFSM::GaitEvent GaitEventFSM::check_state_transition(float gyro_z, float
         recent_cycle_ns_ = 0;
         have_last_hs_ = false;
         impact_seen_in_swing_ = false;
+        swing_gyro_run_ = 0;
+        swing_evidence_ = false;
+        stance_settled_ = true;
+        flat_run_ = 0;
         current_state_ = GaitState::Stance;
         // Published as an explicit "RESET" event (counted like any other
         // transition) so downstream consumers -- the slip node's stance
@@ -133,6 +168,10 @@ GaitEventFSM::GaitEvent GaitEventFSM::check_state_transition(float gyro_z, float
         event.state = current_state_;
         event.detection_count = detection_count_;
         return event;
+    }
+
+    if (contact_hs_) {
+        return step_contact_hs(event, gyro_z, gyro_f, jerk, timestamp_ns);
     }
 
     switch (current_state_) {
@@ -185,6 +224,118 @@ GaitEventFSM::GaitEvent GaitEventFSM::check_state_transition(float gyro_z, float
                 }
                 // A too-early or vetoed crossing disarms the detector; it re-arms
                 // on the next down-cross so the real heel strike still fires.
+            }
+            break;
+        }
+    }
+
+    event.state = current_state_;
+    event.detection_count = detection_count_;
+    return event;
+}
+
+void GaitEventFSM::enter_swing_contact() {
+    current_state_ = GaitState::Swing;
+    swing_samples_ = 0;
+    state_dwell_samples_ = 0;
+    swing_gyro_run_ = 0;
+    swing_evidence_ = false;
+    flat_run_ = 0;
+    hs_detector_.reset();
+}
+
+GaitEventFSM::GaitEvent GaitEventFSM::step_contact_hs(GaitEvent event, float gyro_raw, float gyro_f,
+                                                   float jerk, int64_t timestamp_ns) {
+    flat_run_ = (std::fabs(gyro_f) < contact_.flat_gyro_max) ? flat_run_ + 1 : 0;
+    swing_gyro_run_ = (gyro_raw > contact_.swing_gyro_min) ? swing_gyro_run_ + 1 : 0;
+
+    switch (current_state_) {
+        case GaitState::Stance: {
+            if (!stance_settled_) {
+                // Between the (contact) HS and foot-flat: the slap trough passes
+                // here and must not reach the TO detector, and the residual
+                // positive rotation right after contact is not a new swing.
+                if (flat_run_ >= flat_min_samples_ ||
+                    state_dwell_samples_ >= settle_timeout_samples_) {
+                    stance_settled_ = true;
+                    to_detector_.reset();
+                }
+                swing_gyro_run_ = 0;
+                break;
+            }
+            int64_t peak_ts = 0;
+            if (update_peak(to_detector_, gyro_f, timestamp_ns, to_threshold_, peak_ts)) {
+                event.event_detected = true;
+                event.event_label = "TO";
+                event.event_timestamp_ns = peak_ts - ma_group_delay_ns_;
+                ++detection_count_;
+                enter_swing_contact();
+            } else if (swing_gyro_run_ >= swing_run_needed_) {
+                // Real swing rotation with no toe-off event: the push-off trough
+                // was too weak (first step from standing). Follow the foot into
+                // Swing so the coming landing is labelled HS, not TO.
+                event.event_detected = true;
+                event.event_label = "SWING";
+                ++detection_count_;
+                enter_swing_contact();
+                swing_evidence_ = true;
+                evidence_samples_ = 0;
+                swing_peak_ = gyro_raw;
+            }
+            break;
+        }
+
+        case GaitState::Swing: {
+            ++swing_samples_;
+            bool hs = false;
+            if (!swing_evidence_) {
+                if (swing_gyro_run_ >= swing_run_needed_) {
+                    swing_evidence_ = true;
+                    evidence_samples_ = 0;
+                    swing_peak_ = gyro_raw;
+                }
+            } else {
+                ++evidence_samples_;
+                swing_peak_ = std::max(swing_peak_, gyro_raw);
+                const bool impact = jerk >= contact_.jerk_threshold &&
+                                    gyro_raw < swing_peak_ - contact_.jerk_gyro_drop &&
+                                    evidence_samples_ >= jerk_holdoff_samples_;
+                hs = impact || gyro_raw < 0.0f;
+            }
+            if (hs) {
+                // Stamped with this sample's time: both triggers are on raw
+                // signals at the contact itself, nothing to back-date.
+                event.event_detected = true;
+                event.event_label = "HS";
+                ++detection_count_;
+                if (have_last_hs_) {
+                    recent_cycle_ns_ = timestamp_ns - last_hs_ts_ns_;
+                }
+                last_hs_ts_ns_ = timestamp_ns;
+                have_last_hs_ = true;
+                current_state_ = GaitState::Stance;
+                state_dwell_samples_ = 0;
+                stance_settled_ = false;
+                flat_run_ = 0;
+                swing_gyro_run_ = 0;
+                swing_evidence_ = false;
+                to_detector_.reset();
+            } else if (flat_run_ >= flat_reset_samples_) {
+                // Foot flat and still while we say Swing: the landing never
+                // produced a trigger (weak / shuffled step). The HS time is
+                // unknown, so resync like the timeout guard does.
+                event.event_detected = true;
+                event.event_label = "RESET";
+                ++detection_count_;
+                current_state_ = GaitState::Stance;
+                state_dwell_samples_ = 0;
+                stance_settled_ = true;
+                swing_gyro_run_ = 0;
+                swing_evidence_ = false;
+                recent_cycle_ns_ = 0;
+                have_last_hs_ = false;
+                to_detector_.reset();
+                hs_detector_.reset();
             }
             break;
         }

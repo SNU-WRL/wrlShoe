@@ -5,6 +5,8 @@
 #include <string>
 #include <unordered_map>
 
+#include "motorized_shoe/gait_fsm.hpp"
+
 namespace motorized_shoe {
 
 struct IMUCanIds {
@@ -140,6 +142,10 @@ struct Config {
     // 120 Hz. The filter's group delay of (window-1)/2 samples is compensated
     // for in the back-dated event timestamps.
     int gait_ma_window = 6;
+    // Contact heel-strike detection (gait_detection.hs_contact_detection and the
+    // gait_detection.hs_contact.* block); see GaitEventFSM::set_contact_hs.
+    bool gait_hs_contact_detection = false;
+    GaitEventFSM::ContactHsParams gait_hs_contact;
     // Number of still samples (|global accel| in [9,11] m/s^2) averaged at
     // startup to estimate the per-foot gravity vector that is subtracted to
     // produce free acceleration. ~0.5 s at 120 Hz.
