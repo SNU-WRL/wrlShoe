@@ -133,8 +133,8 @@ elmo_config:
   sdo_tx_offset: 0x600
   sdo_timeout: 300
   can_write_timeout: 100
-  profile_acceleration: 1000000
-  profile_deceleration: 1000000
+  profile_acceleration: 5000000
+  profile_deceleration: 5000000
   # Statusword SDO poll period (ms). Faults are also reported instantly via
   # the drive's EMCY frame, so this is only the fallback / clear detection.
   status_poll_ms: 500
@@ -172,9 +172,16 @@ slip_perturbation:
   foot: "Right"
   slip_velocity: 200000
   slip_duration_ms: 500
-  mode1_delay_after_hs_ms: 0
+  mode1_delay_after_hs_ms: 200
   # Forward-slip lead before the predicted toe-off (ms).
-  to_slip_lead_ms: 50
+  to_slip_lead_ms: 240
+  # Alternative: fire at HS + to_slip_stance_pct % of the predicted stance
+  # instead of a fixed lead (scales with cadence). 0 = off. Replay of the
+  # 2026-09-17/18 logs (531 right steps, stance ~900 ms): 85 % ~ lead 150 ms
+  # (9 % of fires after the push-off trough), 80 % ~ lead 200 ms (5 %),
+  # 70 % lands ~270 ms before the trough with the foot still flat in 79 % of
+  # steps, i.e. mid-stance rather than late stance.
+  to_slip_stance_pct: 85
   # Stance estimator for the forward (BeforeTO) slip. Prediction = median
   # stance FRACTION (stance / HS->HS period) over the last stance_est_window
   # clean cycles, times the period of the cycle that just completed (falls

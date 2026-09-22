@@ -27,6 +27,10 @@ struct SlipConfig {
     // it schedules the slip to fire at t_HS + max(0, stance_est - to_slip_lead_ms),
     // landing the -velocity burst just before the predicted toe-off.
     int to_slip_lead_ms = 50;             // forward-slip lead before predicted TO
+    // Alternative BeforeTO schedule: fire at t_HS + stance_est * pct / 100
+    // (a fraction of the predicted stance, so it scales with cadence). 0 = off,
+    // use to_slip_lead_ms.
+    int to_slip_stance_pct = 0;
     // Stance estimator (see stance_estimator.hpp): medians over the last
     // `stance_est_window` clean cycles; a sample is clean only inside the
     // stance/cycle plausibility windows; an HS gap above reset_gap_ms, an FSM
