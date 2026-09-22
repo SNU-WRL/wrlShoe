@@ -175,13 +175,6 @@ slip_perturbation:
   mode1_delay_after_hs_ms: 200
   # Forward-slip lead before the predicted toe-off (ms).
   to_slip_lead_ms: 240
-  # Alternative: fire at HS + to_slip_stance_pct % of the predicted stance
-  # instead of a fixed lead (scales with cadence). 0 = off. Replay of the
-  # 2026-09-17/18 logs (531 right steps, stance ~900 ms): 85 % ~ lead 150 ms
-  # (9 % of fires after the push-off trough), 80 % ~ lead 200 ms (5 %),
-  # 70 % lands ~270 ms before the trough with the foot still flat in 79 % of
-  # steps, i.e. mid-stance rather than late stance.
-  to_slip_stance_pct: 85
   # Stance estimator for the forward (BeforeTO) slip. Prediction = median
   # stance FRACTION (stance / HS->HS period) over the last stance_est_window
   # clean cycles, times the period of the cycle that just completed (falls

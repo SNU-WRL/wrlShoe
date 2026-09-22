@@ -161,15 +161,10 @@ void SlipPerturbationNode::tick() {
         if (scheduled) {
             const int64_t stance_ns = estimator_.predict_stance_ns();
             std::cout << "[slip] BeforeTO HS anchor (count=" << before_to_anchor_count_
-                      << "); predicted stance=" << (stance_ns / 1000000) << " ms, ";
-            if (cfg_.to_slip_stance_pct > 0) {
-                std::cout << "at " << cfg_.to_slip_stance_pct << "% of stance -> firing at HS+"
-                          << (stance_ns * cfg_.to_slip_stance_pct / 100 / 1000000);
-            } else {
-                std::cout << "lead=" << cfg_.to_slip_lead_ms << " ms -> firing at HS+"
-                          << ((stance_ns / 1000000) - cfg_.to_slip_lead_ms);
-            }
-            std::cout << " ms (" << estimator_.describe() << ")\n";
+                      << "); predicted stance=" << (stance_ns / 1000000) << " ms, lead="
+                      << cfg_.to_slip_lead_ms << " ms -> firing at HS+"
+                      << ((stance_ns / 1000000) - cfg_.to_slip_lead_ms) << " ms ("
+                      << estimator_.describe() << ")\n";
             std::cout.flush();
         }
     }
@@ -286,13 +281,8 @@ bool SlipPerturbationNode::schedule_before_to(int64_t t_hs_ns) {
     if (stance_ns <= 0) {
         return false;
     }
-    int64_t delay_ns = 0;
-    if (cfg_.to_slip_stance_pct > 0) {
-        delay_ns = stance_ns * cfg_.to_slip_stance_pct / 100;
-    } else {
-        const int64_t lead_ns = static_cast<int64_t>(cfg_.to_slip_lead_ms) * 1000000LL;
-        delay_ns = stance_ns - lead_ns;
-    }
+    const int64_t lead_ns = static_cast<int64_t>(cfg_.to_slip_lead_ms) * 1000000LL;
+    int64_t delay_ns = stance_ns - lead_ns;
     if (delay_ns < 0) {
         delay_ns = 0;
     }
