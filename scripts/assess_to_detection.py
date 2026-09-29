@@ -5,7 +5,8 @@ eval_hs_replay.py, standard library only).
     scripts/assess_to_detection.py events.csv *_log.csv
 
 Reference push-off = the deepest raw gyro_z in the 400 ms before a swing bout
-(gyro_z > 1.5 rad/s for 50 ms); TO events are matched to it. Also prints the
+(gyro_z > 1.5 rad/s for 50 ms); TO events within [-250, +300] ms of it are
+matched to it (the inflection trigger fires before the trough). Also prints the
 stance anatomy from the gyro alone (landing zero-cross -> push-off trough is a
 lower bound of the time on the ground, no detector involved).
 """
@@ -73,7 +74,7 @@ for foot in ('Left','Right'):
             for s in steps:
                 if s['depth']>-1.0: continue          # no push-off rotation at all (shuffle)
                 C[mode+' ref push-offs']+=1
-                k=bisect.bisect_left(to_t,s['tr']-0.05)
+                k=bisect.bisect_left(to_t,s['tr']-0.25)
                 if k<len(to_t) and to_t[k]<=s['tr']+0.30:
                     claimed.add(k)
                     R[mode+' TO detect - raw trough'].append((to[k][0]-s['tr'])*1e3)

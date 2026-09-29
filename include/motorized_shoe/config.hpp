@@ -146,6 +146,13 @@ struct Config {
     // gait_detection.hs_contact.* block); see GaitEventFSM::set_contact_hs.
     bool gait_hs_contact_detection = false;
     GaitEventFSM::ContactHsParams gait_hs_contact;
+    // Contact mode only (gait_detection.to_event_offset_ms and the
+    // gait_detection.to_inflection_* keys); see GaitEventFSM::set_to_event_offset_ms
+    // and set_to_inflection.
+    int gait_to_event_offset_ms = 0;
+    bool gait_to_inflection_detection = false;
+    float gait_to_inflection_ratio = 0.5f;
+    int gait_to_inflection_min_armed_ms = 30;
     // Number of still samples (|global accel| in [9,11] m/s^2) averaged at
     // startup to estimate the per-foot gravity vector that is subtracted to
     // produce free acceleration. ~0.5 s at 120 Hz.

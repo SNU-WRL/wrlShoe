@@ -8,9 +8,10 @@
 // ("contact"), both using the thresholds / hs_contact block of <params.yaml>. An
 // IMU sample is a row whose imu_<foot>_msg_count changed, the same rule the
 // gait node uses, stamped with the row's time_s. Output, one row per event:
-//   log,foot,mode,label,t_detect_s,t_event_s
+//   log,foot,mode,label,t_detect_s,t_event_s,detail
 // t_detect_s = the sample on which the FSM declared the event (when a slip
-// would fire), t_event_s = the (possibly back-dated) event timestamp.
+// would fire), t_event_s = the (possibly back-dated) event timestamp, detail =
+// which TO detector fired in contact mode ("inflection" / "trough"), else "".
 // scripts/eval_hs_replay.py scores the result against contact markers.
 #include <cstdint>
 #include <cstdlib>
@@ -57,6 +58,9 @@ void configure(GaitEventFSM& fsm, const Config& cfg, bool contact) {
                           cfg.gait_thresholds.hs_impact_threshold);
     fsm.set_filter_window(cfg.gait_ma_window);
     fsm.set_contact_hs(contact, cfg.gait_hs_contact);
+    fsm.set_to_event_offset_ms(cfg.gait_to_event_offset_ms);
+    fsm.set_to_inflection(cfg.gait_to_inflection_detection, cfg.gait_to_inflection_ratio,
+                          cfg.gait_to_inflection_min_armed_ms);
 }
 
 void replay(const std::string& log, const char* foot, const std::vector<Sample>& samples,
@@ -69,7 +73,8 @@ void replay(const std::string& log, const char* foot, const std::vector<Sample>&
         if (ev.event_detected) {
             std::cout << log << ',' << foot << ',' << (contact ? "contact" : "old") << ','
                       << ev.event_label << ',' << s.t << ','
-                      << static_cast<double>(ev.event_timestamp_ns) / 1e9 << '\n';
+                      << static_cast<double>(ev.event_timestamp_ns) / 1e9 << ','
+                      << ev.event_detail << '\n';
         }
     }
 }
@@ -83,7 +88,7 @@ int main(int argc, char** argv) {
     }
     const Config cfg = motorized_shoe::load_config(argv[1]);
     std::cout.precision(9);
-    std::cout << "log,foot,mode,label,t_detect_s,t_event_s\n";
+    std::cout << "log,foot,mode,label,t_detect_s,t_event_s,detail\n";
 
     for (int a = 2; a < argc; ++a) {
         std::ifstream in(argv[a]);

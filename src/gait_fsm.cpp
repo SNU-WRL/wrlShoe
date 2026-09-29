@@ -53,6 +53,22 @@ void GaitEventFSM::set_contact_hs(bool enabled, const ContactHsParams& params) {
     flat_reset_samples_ = ms_to_samples(params.flat_reset_ms, fs_);
 }
 
+void GaitEventFSM::set_to_event_offset_ms(int ms) {
+    to_event_offset_ns_ = static_cast<int64_t>(ms) * 1000000LL;
+}
+
+void GaitEventFSM::set_to_inflection(bool enabled, float ratio, int min_armed_ms) {
+    to_inflection_ = enabled;
+    to_inflection_ratio_ = ratio;
+    to_inflection_min_armed_samples_ = ms_to_samples(min_armed_ms, fs_);
+}
+
+void GaitEventFSM::reset_to_inflection_state() {
+    to_armed_ = false;
+    to_min_slope_ = 0.0f;
+    to_armed_samples_ = 0;
+}
+
 void GaitEventFSM::set_filter_window(int window) {
     ma_window_ = (window > 1) ? window : 1;
     // Symmetric moving-average group delay is (window-1)/2 samples. Expressed in
@@ -124,6 +140,11 @@ GaitEventFSM::GaitEvent GaitEventFSM::check_state_transition(float gyro_z, float
     const float gyro_f =
         std::accumulate(gyro_ma_buffer_.begin(), gyro_ma_buffer_.end(), 0.0f) /
         static_cast<float>(gyro_ma_buffer_.size());
+    // Per-sample slope of the filtered gyro (TO inflection trigger). Computed
+    // from the MA output on purpose: the raw gyro is too noisy for a slope.
+    const float gyro_f_slope = have_prev_gyro_f_ ? (gyro_f - prev_gyro_f_) : 0.0f;
+    prev_gyro_f_ = gyro_f;
+    have_prev_gyro_f_ = true;
 
     ++state_dwell_samples_;
 
@@ -157,6 +178,8 @@ GaitEventFSM::GaitEvent GaitEventFSM::check_state_transition(float gyro_z, float
         swing_evidence_ = false;
         stance_settled_ = true;
         flat_run_ = 0;
+        reset_to_inflection_state();
+        have_prev_gyro_f_ = false;
         current_state_ = GaitState::Stance;
         // Published as an explicit "RESET" event (counted like any other
         // transition) so downstream consumers -- the slip node's stance
@@ -171,7 +194,7 @@ GaitEventFSM::GaitEvent GaitEventFSM::check_state_transition(float gyro_z, float
     }
 
     if (contact_hs_) {
-        return step_contact_hs(event, gyro_z, gyro_f, jerk, timestamp_ns);
+        return step_contact_hs(event, gyro_z, gyro_f, gyro_f_slope, jerk, timestamp_ns);
     }
 
     switch (current_state_) {
@@ -242,10 +265,12 @@ void GaitEventFSM::enter_swing_contact() {
     swing_evidence_ = false;
     flat_run_ = 0;
     hs_detector_.reset();
+    reset_to_inflection_state();
 }
 
 GaitEventFSM::GaitEvent GaitEventFSM::step_contact_hs(GaitEvent event, float gyro_raw, float gyro_f,
-                                                   float jerk, int64_t timestamp_ns) {
+                                                   float gyro_f_slope, float jerk,
+                                                   int64_t timestamp_ns) {
     flat_run_ = (std::fabs(gyro_f) < contact_.flat_gyro_max) ? flat_run_ + 1 : 0;
     swing_gyro_run_ = (gyro_raw > contact_.swing_gyro_min) ? swing_gyro_run_ + 1 : 0;
 
@@ -263,11 +288,48 @@ GaitEventFSM::GaitEvent GaitEventFSM::step_contact_hs(GaitEvent event, float gyr
                 swing_gyro_run_ = 0;
                 break;
             }
+            if (to_inflection_) {
+                // Inflection trigger: arm on the same down-cross as the peak
+                // detector, track the steepest descent, fire once the descent
+                // has decelerated to ratio x that (to_min_slope_ is negative,
+                // so "slope > ratio * min" = less steep than ratio of the
+                // steepest) while still descending (not the trough itself)
+                // and still below the threshold (not the initial dip at the
+                // arming edge).
+                if (!to_armed_ && gyro_f <= to_threshold_) {
+                    to_armed_ = true;
+                    to_min_slope_ = gyro_f_slope;
+                    to_armed_samples_ = 0;
+                }
+                if (to_armed_) {
+                    ++to_armed_samples_;
+                    to_min_slope_ = std::min(to_min_slope_, gyro_f_slope);
+                    const bool inflection =
+                        to_armed_samples_ >= to_inflection_min_armed_samples_ &&
+                        gyro_f_slope > to_inflection_ratio_ * to_min_slope_ &&
+                        gyro_f_slope < 0.0f && gyro_f < to_threshold_;
+                    if (inflection) {
+                        event.event_detected = true;
+                        event.event_label = "TO";
+                        event.event_detail = "inflection";
+                        // At lift-off: stamped with this sample, no back-dating,
+                        // no offset.
+                        event.event_timestamp_ns = timestamp_ns;
+                        ++detection_count_;
+                        enter_swing_contact();
+                        to_detector_.reset();
+                        break;
+                    }
+                }
+            }
+            // Trough / re-cross detector: the only TO path with the inflection
+            // trigger off, the fallback for shallow push-offs with it on.
             int64_t peak_ts = 0;
             if (update_peak(to_detector_, gyro_f, timestamp_ns, to_threshold_, peak_ts)) {
                 event.event_detected = true;
                 event.event_label = "TO";
-                event.event_timestamp_ns = peak_ts - ma_group_delay_ns_;
+                event.event_detail = "trough";
+                event.event_timestamp_ns = peak_ts - ma_group_delay_ns_ + to_event_offset_ns_;
                 ++detection_count_;
                 enter_swing_contact();
             } else if (swing_gyro_run_ >= swing_run_needed_) {
@@ -297,7 +359,14 @@ GaitEventFSM::GaitEvent GaitEventFSM::step_contact_hs(GaitEvent event, float gyr
             } else {
                 ++evidence_samples_;
                 swing_peak_ = std::max(swing_peak_, gyro_raw);
-                const bool impact = jerk >= contact_.jerk_threshold &&
+                // Contact test: the raw gyro has dropped off its swing peak
+                // (plus, only when jerk_threshold > 0, an accel jump this
+                // sample). jerk_threshold <= 0 disables the accel test.
+                const bool jerk_ok =
+                    contact_.jerk_threshold <= 0.0f || jerk >= contact_.jerk_threshold;
+                const bool cap_ok =
+                    contact_.contact_gyro_max <= 0.0f || gyro_raw < contact_.contact_gyro_max;
+                const bool impact = jerk_ok && cap_ok &&
                                     gyro_raw < swing_peak_ - contact_.jerk_gyro_drop &&
                                     evidence_samples_ >= jerk_holdoff_samples_;
                 hs = impact || gyro_raw < 0.0f;
@@ -320,6 +389,7 @@ GaitEventFSM::GaitEvent GaitEventFSM::step_contact_hs(GaitEvent event, float gyr
                 swing_gyro_run_ = 0;
                 swing_evidence_ = false;
                 to_detector_.reset();
+                reset_to_inflection_state();
             } else if (flat_run_ >= flat_reset_samples_) {
                 // Foot flat and still while we say Swing: the landing never
                 // produced a trigger (weak / shuffled step). The HS time is
