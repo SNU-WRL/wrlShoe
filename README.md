@@ -152,3 +152,10 @@ ERROR-ACTIVE and RX/TX packets must count up.
   `build/gait_fsm_replay config/motorized_shoe_params.yaml *_log.csv > events.csv`
   then `scripts/eval_hs_replay.py --ref-swing-min 1.5 events.csv *_log.csv`.
   The 2026-09-15 result is in `docs/hs_contact_detection_replay_2026-09-17.txt`.
+  Timing fixes from the 2026-09-22 mocap sessions (`docs/gait_timing_replay_2026-09-22.txt`):
+  the HS contact test is the raw gyro dropping `hs_contact.jerk_gyro_drop` (1.5 rad/s)
+  off its swing peak with the accel test disabled (`jerk_threshold: 0`, the heel lands on
+  wheels so there is no impact), capped by `contact_gyro_max`; `to_event_offset_ms: -30`
+  moves the TO event stamp onto the mocap lift-off; and `to_inflection_detection: true`
+  (default off) declares TO at the inflection of the gyro descent, ~100 ms before the
+  re-cross, with the trough detector as fallback. Rollback = the yaml keys.

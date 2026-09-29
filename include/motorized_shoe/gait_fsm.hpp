@@ -58,12 +58,15 @@ public:
     //     machine still says Stance (missed toe-off) moves it to Swing with a
     //     "SWING" event instead of leaving it inverted.
     //   * HS then fires, stamped with the firing sample's own time, on the
-    //     first of (a) a contact impact: |a_k - a_(k-1)| >= jerk_threshold
-    //     (m/s^2 per sample; 10-50 at contact vs 1-3 in swing, unlike the
-    //     |accel| norm that swing shake exceeds) once gyro_z has fallen
-    //     jerk_gyro_drop below its swing peak and jerk_holdoff_ms after the
-    //     swing evidence, or (b) raw gyro_z < 0 (start of the foot-down
-    //     rotation). min_swing_dwell_ms and the accel veto are not used.
+    //     first of (a) the contact test: raw gyro_z has fallen jerk_gyro_drop
+    //     below its swing peak, jerk_holdoff_ms after the swing evidence, and
+    //     -- only if jerk_threshold > 0 -- the accel changed by at least
+    //     jerk_threshold m/s^2 since the previous sample; or (b) raw gyro_z <
+    //     0 (start of the foot-down rotation). jerk_threshold <= 0 disables
+    //     the accel test: the heel lands on wheels, so there is no accel jump
+    //     at first contact (mocap 2026-09-22: median 3 m/s^2, >= 8 in only
+    //     3-12 % of strides) and the accel path fired at the forefoot slap
+    //     ~115 ms late. min_swing_dwell_ms and the accel veto are not used.
     //   * The TO trough detector and the swing-evidence counter only arm once
     //     the stance has settled: |filtered gyro_z| < flat_gyro_max for
     //     flat_min_ms, or settle_timeout_ms after HS. HS now precedes the slap
@@ -75,6 +78,10 @@ public:
         int swing_min_ms = 50;
         float jerk_threshold = 8.0f;
         float jerk_gyro_drop = 0.5f;
+        // Optional cap on the contact test: also require raw gyro_z <
+        // contact_gyro_max (rad/s). 0 = off. Guards the peak-relative drop
+        // against firing on the descent from a high mid-swing peak.
+        float contact_gyro_max = 0.0f;
         int jerk_holdoff_ms = 100;
         float flat_gyro_max = 0.5f;
         int flat_min_ms = 100;
@@ -82,6 +89,26 @@ public:
         int flat_reset_ms = 200;
     };
     void set_contact_hs(bool enabled, const ContactHsParams& params);
+
+    // Contact mode only: constant added to the TO event timestamp of the
+    // trough/re-cross detector. The back-dated MA trough sits ~30 ms after the
+    // front edge of the shoe leaves the ground (mocap 2026-09-15/22, 369
+    // strides), so -30 makes the stance estimate unbiased. The state change
+    // (declaration) is not moved.
+    void set_to_event_offset_ms(int ms);
+
+    // Contact mode only: TO inflection trigger. During push-off the shoe
+    // pitches nose-down about its front edge and the filtered gyro_z descends
+    // monotonically; while the edge is loaded the descent keeps accelerating,
+    // and when the edge leaves the ground it decelerates. TO is declared, and
+    // stamped at that sample (no back-dating, no offset), when the per-sample
+    // slope of the filtered gyro_z has decelerated to `ratio` x its steepest
+    // value so far while still descending and still below to_threshold, at
+    // least min_armed_ms after the down-cross. Mocap 2026-09-22: median -8 ms
+    // vs lift-off (5th-95th pct -50..+23 ms, 328 strides), ~100 ms before the
+    // re-cross that declares TO today. The trough/re-cross detector stays as
+    // the fallback for shallow push-offs.
+    void set_to_inflection(bool enabled, float ratio, int min_armed_ms);
 
     // Moving-average window (samples) on gyro_z. window <= 1 disables filtering.
     // The (window-1)/2-sample group delay is compensated for when back-dating
@@ -104,6 +131,9 @@ public:
         // consumes these labels directly (HS = backward/AfterHS anchor + stance
         // estimator; TO = stance estimator only; RESET = estimator reset).
         const char* event_label = "";
+        // Contact-mode TO only: "inflection" or "trough" (which detector
+        // fired). "" for every other event.
+        const char* event_detail = "";
     };
 
     // accel_* is the RAW accelerometer vector in m/s^2 (gravity NOT removed).
@@ -164,8 +194,9 @@ private:
     int swing_samples_ = 0;
 
     // Contact heel-strike mode (see set_contact_hs).
-    GaitEvent step_contact_hs(GaitEvent event, float gyro_raw, float gyro_f, float jerk,
-                            int64_t timestamp_ns);
+    GaitEvent step_contact_hs(GaitEvent event, float gyro_raw, float gyro_f, float gyro_f_slope,
+                            float jerk, int64_t timestamp_ns);
+    void reset_to_inflection_state();
     void enter_swing_contact();
     static int ms_to_samples(int ms, float fs);
     bool contact_hs_ = false;
@@ -183,6 +214,17 @@ private:
     float swing_peak_ = 0.0f;       // largest raw gyro_z since the evidence
     bool stance_settled_ = true;    // foot-flat seen (or timed out) since HS
     int flat_run_ = 0;              // consecutive |filtered gyro_z| < flat_gyro_max
+
+    // TO event offset and inflection trigger (see the setters).
+    int64_t to_event_offset_ns_ = 0;
+    bool to_inflection_ = false;
+    float to_inflection_ratio_ = 0.5f;
+    int to_inflection_min_armed_samples_ = 3;
+    bool to_armed_ = false;         // filtered gyro_z crossed down past to_threshold
+    float to_min_slope_ = 0.0f;     // steepest (most negative) per-sample slope since arming
+    int to_armed_samples_ = 0;      // samples since arming
+    float prev_gyro_f_ = 0.0f;      // previous filtered gyro_z (slope source)
+    bool have_prev_gyro_f_ = false;
 };
 
 }  // namespace motorized_shoe

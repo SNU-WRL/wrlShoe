@@ -1,0 +1,567 @@
+# Gait FSM HS/TO timing fixes (C1 gyro-drop HS, C2 TO offset, C3 TO inflection) -- replay 2026-09-22
+# 41 logs (17 x 2026-09-15, 9 x 09-17, 10 x 09-18, 5 x 09-22), both feet, contact mode.
+# Baseline = faefc28 yaml (jerk_threshold 8.0 / jerk_gyro_drop 0.5 / to_event_offset_ms 0 / to_inflection_detection false).
+# Committed yaml = C1 (jerk_threshold 0, jerk_gyro_drop 1.5, contact_gyro_max 2.5) + C2 (to_event_offset_ms -30), C3 off.
+# Reference landing/push-off markers are IMU-only (no mocap on this box): zc = raw gyro zero-cross after the swing bout
+# (mocap 2026-09-22: zc ~ contact +115 ms), wheel kick = independent inertial marker, raw trough = push-off gyro minimum.
+
+== 1. parity: new binary with all three changes off vs the faefc28 binary + yaml: byte-identical, 14522 events.
+
+== 2/4. acceptance metrics vs baseline (HS shift = same HS matched within 400 ms; missed = reference landings without an HS)
+   'final' = committed yaml (C1+C2), 'final_c3' = committed yaml + to_inflection_detection true
+variant      group  | HS shift vs base (ms)              | gz>2.5 | >150ms before zc | HS - zero-cross                | HS - wheel kick                | missed | HS/TO count dev
+final        0922   Right| n= 367 med  -110 p10  -151 p90   -11 |   0 ( 0.0%) |  79 (21.5%) | n= 366 med  -129 p10  -160 p90   -71 | n= 312 med  -126 p10  -170 p90   -31 |   1 | +0..+0 / +0..+0
+final        0922   Left | n= 362 med   -51 p10  -129 p90    +0 |   0 ( 0.0%) |  24 ( 6.6%) | n= 362 med  -100 p10  -139 p90   -29 | n= 329 med   -77 p10  -140 p90    +9 |   0 | +0..+0 / +0..+0
+final        0917-18 Right| n= 798 med   -79 p10  -150 p90    +0 |   0 ( 0.0%) | 121 (15.1%) | n= 800 med  -119 p10  -160 p90   -60 | n= 467 med  -120 p10  -180 p90    +6 |   1 | +0..+1 / +0..+1
+final        0915   Right| n= 402 med  -100 p10  -160 p90    +0 |   0 ( 0.0%) | 108 (26.8%) | n= 402 med  -130 p10  -170 p90   -40 | n= 191 med  -142 p10  -193 p90    +5 |   1 | +0..+1 / -2..+1
+final_c3     0922   Right| n= 366 med  -110 p10  -150 p90   -11 |   0 ( 0.0%) |  78 (21.3%) | n= 365 med  -129 p10  -160 p90   -71 | n= 311 med  -126 p10  -170 p90   -31 |   2 | +0..+0 / +0..+1
+final_c3     0922   Left | n= 362 med   -51 p10  -129 p90    +0 |   0 ( 0.0%) |  24 ( 6.6%) | n= 362 med  -100 p10  -139 p90   -29 | n= 329 med   -77 p10  -140 p90    +9 |   0 | +0..+0 / +0..+0
+final_c3     0917-18 Right| n= 798 med   -79 p10  -150 p90    +0 |   0 ( 0.0%) | 121 (15.1%) | n= 800 med  -119 p10  -160 p90   -60 | n= 467 med  -120 p10  -180 p90    +6 |   1 | +0..+1 / +0..+1
+final_c3     0915   Right| n= 402 med  -100 p10  -160 p90    +0 |   0 ( 0.0%) | 108 (26.8%) | n= 402 med  -130 p10  -170 p90   -40 | n= 191 med  -142 p10  -193 p90    +5 |   1 | +0..+1 / +0..+1
+
+   Spec variant without the cap (jerk_gyro_drop 1.5, contact_gyro_max 0): gz>2.5 at HS = 23.7 % right / 6.4 % left on 09-22,
+   22.8 % right on 09-17/18, 5.7 % on 09-15; median HS shift -119 ms (right 09-22). Brief expected <= 1 %.
+   jerk_gyro_drop 2.0 + cap 2.5: HS shift -70 ms (right 09-22), HS - zc -100, > 150 ms before zc 6.3 %.
+
+== 3. C2: C1+C2 vs C1 event lists identical; every TO event stamp exactly -30.0 ms, all other stamps unchanged.
+
+== 4. C3 (final_c3 vs baseline):
+TO event-stamp shift vs baseline (matched TO): n=3131 median   -40 p10   -70 p90   +10 min  -132 max   +89
+TO declaration (state flip) shift vs baseline: n=3131 median  -110 p10  -130 p90   -40 min  -240 max    +0
+TO detail counts: {'trough': 157, 'inflection': 2986} ; TO - preceding HS gap min 210 ms
+slip bursts with a different HS/TO count than baseline: 25 [('204016', 'Right', 72.31, 2, 1), ('204016', 'Right', 104.3, 2, 1), ('204316', 'Right', 5.31, 2, 1), ('164310', 'Right', 23.44, 1, 0), ('164310', 'Right', 64.46, 1, 0), ('164310', 'Right', 102.03, 1, 0)]
+   TO count deviation per (log,foot) with >= 10 TO: +0.0 .. +5.9 % (total +0.4 %); RESET 1144 -> 1150.
+   Inflection fires 2986 of 3145 TO (95 %); trough fallback 159 (5 %). 101 inflection fires (3.4 %) sit > 100 ms before the raw trough; 2 are followed by a RESET.
+   TO - preceding HS gap minimum 210 ms (no TO before the stance settled).
+
+== 5. slip bursts (87): no burst has more HS/TO events than baseline; 25 (C3 on) / 24 (C3 off) have fewer (the late HS that baseline fired inside the burst now fires before it).
+
+############ scripts/eval_hs_replay.py --ref-swing-min 1.5 : baseline
+== harness fidelity (old-mode replay vs FSM transitions in the logs, +-15 ms)
+   logged 6194, reproduced 3701, replay produced 7070
+
+== Left foot, old detector
+   reference landings 1542 | HS events 1472 | landings missed 196 | HS at toe-off 92 | other unmatched HS 39 | HS pairs < 400 ms apart 0
+   TO events 1523, of which not followed by a swing 537
+   HS detect - first contact (jerk, else zc): n=1346  median  +131  p10  -360  p90  +201  min  -400  max  +511 ms
+   HS detect - gyro zero-cross            : n=1346  median  +110  p10  -380  p90  +150  min  -400  max  +400 ms
+   HS detect - wheel kick (independent)   : n=1234  median  +111  p10  -370  p90  +200  min  -447  max  +373 ms
+   stance seen by the estimator (TO - HS stamps): n=1371  median  +796  p10  +481  p90  +961  min  +311  max +1491 ms
+
+== Left foot, contact detector
+   reference landings 1542 | HS events 1546 | landings missed 8 | HS at toe-off 0 | other unmatched HS 14 | HS pairs < 400 ms apart 0
+   TO events 1568, of which not followed by a swing 176
+   HS detect - first contact (jerk, else zc): n=1534  median    +0  p10    +0  p90    +0  min  -385  max  +360 ms
+   HS detect - gyro zero-cross            : n=1534  median    -9  p10   -90  p90    +0  min  -385  max    +0 ms
+   HS detect - wheel kick (independent)   : n=1361  median    -4  p10   -75  p90   +16  min  -381  max  +280 ms
+   stance seen by the estimator (TO - HS stamps): n=1419  median  +921  p10  +811  p90 +1102  min  +321  max +1482 ms
+
+== Right foot, old detector
+   reference landings 1571 | HS events 1464 | landings missed 244 | HS at toe-off 125 | other unmatched HS 15 | HS pairs < 400 ms apart 0
+   TO events 1512, of which not followed by a swing 287
+   HS detect - first contact (jerk, else zc): n=1327  median  +139  p10  -247  p90  +230  min  -400  max  +390 ms
+   HS detect - gyro zero-cross            : n=1327  median  +112  p10  -259  p90  +151  min  -400  max  +300 ms
+   HS detect - wheel kick (independent)   : n=881  median  +107  p10  -164  p90  +210  min  -444  max  +400 ms
+   stance seen by the estimator (TO - HS stamps): n=1358  median  +796  p10  +529  p90  +959  min  +319  max +1499 ms
+
+== Right foot, contact detector
+   reference landings 1571 | HS events 1567 | landings missed 4 | HS at toe-off 0 | other unmatched HS 3 | HS pairs < 400 ms apart 0
+   TO events 1563, of which not followed by a swing 75
+   HS detect - first contact (jerk, else zc): n=1567  median    +0  p10    +0  p90    +0  min  -300  max   +69 ms
+   HS detect - gyro zero-cross            : n=1567  median    +0  p10  -109  p90    +0  min  -311  max    +0 ms
+   HS detect - wheel kick (independent)   : n=970  median   -15  p10  -101  p90   +13  min  -210  max  +129 ms
+   stance seen by the estimator (TO - HS stamps): n=1416  median  +909  p10  +789  p90 +1108  min  +320  max +1489 ms
+
+== triggered AfterHS slips: logged fire vs where the contact detector fires
+   log    foot  t_fire   fired at            fire-contact  contact-det - contact (ms)
+   182914 Left    19.30  landing             +110          +0
+   200951 Right   22.07  landing             +149          +0
+   200951 Right   66.36  landing             +210          +0
+   201219 Right   15.34  landing             +160          +0
+   201219 Right   27.79  landing             +300          +0
+   201219 Right   52.42  landing             +179          +0
+   203549 Right   20.28  TOE-OFF (inverted)  None          no contact HS here
+   203549 Right   31.54  landing             +180          +0
+   203549 Right   49.30  landing             +300          +0
+   203549 Right   65.93  landing             +270          +0
+   203549 Right   97.16  landing             +290          +0
+   203549 Right  108.86  landing             +250          +0
+   204016 Right   14.23  landing             +240          +0
+   204016 Right   28.72  landing             +149          +0
+   204016 Right   58.73  landing             +200          +0
+   204016 Right   72.31  TOE-OFF (inverted)  None          no contact HS here
+   204016 Right   84.35  landing             +280          +0
+   204016 Right   93.42  TOE-OFF (inverted)  None          no contact HS here
+   204016 Right  104.30  TOE-OFF (inverted)  None          no contact HS here
+   204316 Right    5.31  TOE-OFF (inverted)  None          no contact HS here
+   204316 Right   15.38  landing             +250          +0
+   204316 Right   33.16  landing             +280          +0
+   204316 Right   46.30  landing             +309          +0
+   204316 Right   78.67  landing             +260          +0
+   204316 Right   87.33  landing             +220          +0
+   164310 Right   23.44  landing             +0            +0
+   164310 Right   64.46  landing             +0            +0
+   164310 Right   77.03  TOE-OFF (inverted)  None          contact detector also fires here!
+   164310 Right   90.93  TOE-OFF (inverted)  None          contact detector also fires here!
+   164310 Right  102.03  TOE-OFF (inverted)  None          contact detector also fires here!
+   173418 Right   40.29  TOE-OFF (inverted)  None          contact detector also fires here!
+   173418 Right   56.01  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   57.20  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   68.71  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   79.89  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   83.86  landing             +0            +0
+   110429 Right   93.75  landing             +0            +0
+   110429 Right   98.57  landing             +0            +0
+   110429 Right  108.99  landing             +0            +0
+   110842 Right   13.18  TOE-OFF (inverted)  None          contact detector also fires here!
+   110842 Right   20.64  TOE-OFF (inverted)  None          contact detector also fires here!
+   110842 Right   24.56  TOE-OFF (inverted)  None          contact detector also fires here!
+   110957 Right   12.65  TOE-OFF (inverted)  None          contact detector also fires here!
+   110957 Right   22.89  landing             +0            +0
+   110957 Right   29.91  landing             +0            +0
+   110957 Right   40.93  landing             +0            +0
+   111344 Right   15.60  TOE-OFF (inverted)  None          contact detector also fires here!
+   111344 Right   21.08  TOE-OFF (inverted)  None          contact detector also fires here!
+   111344 Right   35.45  TOE-OFF (inverted)  None          contact detector also fires here!
+   111554 Right   16.22  landing             +0            +0
+   111554 Right   23.85  landing             +0            +0
+   111554 Right   39.67  TOE-OFF (inverted)  None          contact detector also fires here!
+   111554 Right   47.67  landing             +0            +0
+   111554 Right   80.05  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   12.36  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   22.56  landing             +0            +0
+   112343 Right   27.02  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   38.71  landing             +0            +0
+   112343 Right   53.14  landing             +0            +0
+   112343 Right   68.92  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   73.33  landing             +0            +0
+   112343 Right   81.69  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right  100.32  TOE-OFF (inverted)  None          contact detector also fires here!
+   112658 Right   13.33  TOE-OFF (inverted)  None          contact detector also fires here!
+   112658 Right   24.27  TOE-OFF (inverted)  None          contact detector also fires here!
+   112820 Right   14.41  landing             +100          +0
+   112820 Right   25.27  landing             +100          +0
+   112820 Right   39.63  landing             +100          +0
+   112820 Right   46.53  landing             +100          +0
+   112820 Right   59.26  landing             +100          +0
+   112820 Right   81.90  landing             +100          +0
+   112820 Right   92.59  landing             +100          +0
+   112820 Right   96.98  landing             +100          +0
+   112820 Right  107.98  landing             +100          +0
+   112820 Right  113.58  landing             +100          +0
+   112820 Right  120.87  landing             +100          +0
+   112820 Right  124.97  landing             +100          +0
+   113527 Right   12.74  landing             +200          +0
+   113527 Right   22.95  landing             +200          +0
+   113527 Right   28.21  landing             +200          +0
+   113527 Right   44.79  landing             +200          +0
+   113527 Right   56.92  landing             +200          +0
+   113527 Right   61.26  landing             +201          +0
+   113527 Right   76.07  landing             +200          +0
+   113527 Right   80.50  landing             +200          +0
+   113527 Right   95.31  landing             +200          +0
+   113527 Right  100.49  landing             +200          +0
+
+############ scripts/eval_hs_replay.py --ref-swing-min 1.5 : committed yaml (C1+C2)
+== harness fidelity (old-mode replay vs FSM transitions in the logs, +-15 ms)
+   logged 6194, reproduced 3701, replay produced 7070
+
+== Left foot, old detector
+   reference landings 1542 | HS events 1472 | landings missed 196 | HS at toe-off 92 | other unmatched HS 39 | HS pairs < 400 ms apart 0
+   TO events 1523, of which not followed by a swing 537
+   HS detect - first contact (jerk, else zc): n=1346  median  +131  p10  -360  p90  +201  min  -400  max  +511 ms
+   HS detect - gyro zero-cross            : n=1346  median  +110  p10  -380  p90  +150  min  -400  max  +400 ms
+   HS detect - wheel kick (independent)   : n=1234  median  +111  p10  -370  p90  +200  min  -447  max  +373 ms
+   stance seen by the estimator (TO - HS stamps): n=1371  median  +796  p10  +481  p90  +961  min  +311  max +1491 ms
+
+== Left foot, contact detector
+   reference landings 1542 | HS events 1546 | landings missed 8 | HS at toe-off 0 | other unmatched HS 14 | HS pairs < 400 ms apart 0
+   TO events 1571, of which not followed by a swing 179
+   HS detect - first contact (jerk, else zc): n=1534  median   -39  p10  -131  p90    +9  min  -385  max  +271 ms
+   HS detect - gyro zero-cross            : n=1534  median   -80  p10  -150  p90   -19  min  -385  max    +0 ms
+   HS detect - wheel kick (independent)   : n=1361  median   -60  p10  -153  p90   +11  min  -381  max  +195 ms
+   stance seen by the estimator (TO - HS stamps): n=1412  median  +942  p10  +831  p90 +1111  min  +310  max +1491 ms
+
+== Right foot, old detector
+   reference landings 1571 | HS events 1464 | landings missed 244 | HS at toe-off 125 | other unmatched HS 15 | HS pairs < 400 ms apart 0
+   TO events 1512, of which not followed by a swing 287
+   HS detect - first contact (jerk, else zc): n=1327  median  +139  p10  -247  p90  +230  min  -400  max  +390 ms
+   HS detect - gyro zero-cross            : n=1327  median  +112  p10  -259  p90  +151  min  -400  max  +300 ms
+   HS detect - wheel kick (independent)   : n=881  median  +107  p10  -164  p90  +210  min  -444  max  +400 ms
+   stance seen by the estimator (TO - HS stamps): n=1358  median  +796  p10  +529  p90  +959  min  +319  max +1499 ms
+
+== Right foot, contact detector
+   reference landings 1571 | HS events 1569 | landings missed 3 | HS at toe-off 0 | other unmatched HS 4 | HS pairs < 400 ms apart 0
+   TO events 1565, of which not followed by a swing 79
+   HS detect - first contact (jerk, else zc): n=1568  median   -91  p10  -151  p90    +0  min  -349  max   +90 ms
+   HS detect - gyro zero-cross            : n=1568  median  -120  p10  -160  p90   -60  min  -349  max    +0 ms
+   HS detect - wheel kick (independent)   : n=970  median  -126  p10  -179  p90    +0  min  -308  max   +96 ms
+   stance seen by the estimator (TO - HS stamps): n=1410  median  +959  p10  +859  p90 +1149  min  +309  max +1499 ms
+
+== triggered AfterHS slips: logged fire vs where the contact detector fires
+   log    foot  t_fire   fired at            fire-contact  contact-det - contact (ms)
+   182914 Left    19.30  landing             +110          -160
+   200951 Right   22.07  landing             +149          -140
+   200951 Right   66.36  landing             +210          -40
+   201219 Right   15.34  landing             +160          -120
+   201219 Right   27.79  landing             +300          +0
+   201219 Right   52.42  landing             +179          -111
+   203549 Right   20.28  TOE-OFF (inverted)  None          no contact HS here
+   203549 Right   31.54  landing             +180          -120
+   203549 Right   49.30  landing             +300          -10
+   203549 Right   65.93  landing             +270          +0
+   203549 Right   97.16  landing             +290          +0
+   203549 Right  108.86  landing             +250          +0
+   204016 Right   14.23  landing             +240          +0
+   204016 Right   28.72  landing             +149          -161
+   204016 Right   58.73  landing             +200          -60
+   204016 Right   72.31  TOE-OFF (inverted)  None          no contact HS here
+   204016 Right   84.35  landing             +280          +0
+   204016 Right   93.42  TOE-OFF (inverted)  None          no contact HS here
+   204016 Right  104.30  TOE-OFF (inverted)  None          no contact HS here
+   204316 Right    5.31  TOE-OFF (inverted)  None          no contact HS here
+   204316 Right   15.38  landing             +250          +0
+   204316 Right   33.16  landing             +280          +0
+   204316 Right   46.30  landing             +309          +0
+   204316 Right   78.67  landing             +260          +0
+   204316 Right   87.33  landing             +220          +0
+   164310 Right   23.44  landing             +0            -80
+   164310 Right   64.46  landing             +0            -110
+   164310 Right   77.03  TOE-OFF (inverted)  None          contact detector also fires here!
+   164310 Right   90.93  TOE-OFF (inverted)  None          contact detector also fires here!
+   164310 Right  102.03  TOE-OFF (inverted)  None          contact detector also fires here!
+   173418 Right   40.29  TOE-OFF (inverted)  None          contact detector also fires here!
+   173418 Right   56.01  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   57.20  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   68.71  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   79.89  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   83.86  landing             +0            -109
+   110429 Right   93.75  landing             +0            -110
+   110429 Right   98.57  landing             +0            -159
+   110429 Right  108.99  landing             +0            -110
+   110842 Right   13.18  TOE-OFF (inverted)  None          contact detector also fires here!
+   110842 Right   20.64  TOE-OFF (inverted)  None          contact detector also fires here!
+   110842 Right   24.56  TOE-OFF (inverted)  None          contact detector also fires here!
+   110957 Right   12.65  TOE-OFF (inverted)  None          contact detector also fires here!
+   110957 Right   22.89  landing             +0            -89
+   110957 Right   29.91  landing             +0            -120
+   110957 Right   40.93  landing             +0            -60
+   111344 Right   15.60  TOE-OFF (inverted)  None          contact detector also fires here!
+   111344 Right   21.08  TOE-OFF (inverted)  None          contact detector also fires here!
+   111344 Right   35.45  TOE-OFF (inverted)  None          contact detector also fires here!
+   111554 Right   16.22  landing             +0            -84
+   111554 Right   23.85  landing             +0            -50
+   111554 Right   39.67  TOE-OFF (inverted)  None          contact detector also fires here!
+   111554 Right   47.67  landing             +0            -25
+   111554 Right   80.05  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   12.36  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   22.56  landing             +0            -69
+   112343 Right   27.02  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   38.71  landing             +0            -70
+   112343 Right   53.14  landing             +0            -110
+   112343 Right   68.92  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   73.33  landing             +0            -79
+   112343 Right   81.69  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right  100.32  TOE-OFF (inverted)  None          contact detector also fires here!
+   112658 Right   13.33  TOE-OFF (inverted)  None          contact detector also fires here!
+   112658 Right   24.27  TOE-OFF (inverted)  None          contact detector also fires here!
+   112820 Right   14.41  landing             +100          -10
+   112820 Right   25.27  landing             +100          +0
+   112820 Right   39.63  landing             +100          -90
+   112820 Right   46.53  landing             +100          -104
+   112820 Right   59.26  landing             +100          -100
+   112820 Right   81.90  landing             +100          +0
+   112820 Right   92.59  landing             +100          +0
+   112820 Right   96.98  landing             +100          +0
+   112820 Right  107.98  landing             +100          +0
+   112820 Right  113.58  landing             +100          -100
+   112820 Right  120.87  landing             +100          +0
+   112820 Right  124.97  landing             +100          +0
+   113527 Right   12.74  landing             +200          -138
+   113527 Right   22.95  landing             +200          -130
+   113527 Right   28.21  landing             +200          -120
+   113527 Right   44.79  landing             +200          -125
+   113527 Right   56.92  landing             +200          -10
+   113527 Right   61.26  landing             +201          -101
+   113527 Right   76.07  landing             +200          -20
+   113527 Right   80.50  landing             +200          -29
+   113527 Right   95.31  landing             +200          -79
+   113527 Right  100.49  landing             +200          -10
+
+############ scripts/eval_hs_replay.py --ref-swing-min 1.5 : committed yaml + C3
+== harness fidelity (old-mode replay vs FSM transitions in the logs, +-15 ms)
+   logged 6194, reproduced 3701, replay produced 7070
+
+== Left foot, old detector
+   reference landings 1542 | HS events 1472 | landings missed 196 | HS at toe-off 92 | other unmatched HS 39 | HS pairs < 400 ms apart 0
+   TO events 1523, of which not followed by a swing 537
+   HS detect - first contact (jerk, else zc): n=1346  median  +131  p10  -360  p90  +201  min  -400  max  +511 ms
+   HS detect - gyro zero-cross            : n=1346  median  +110  p10  -380  p90  +150  min  -400  max  +400 ms
+   HS detect - wheel kick (independent)   : n=1234  median  +111  p10  -370  p90  +200  min  -447  max  +373 ms
+   stance seen by the estimator (TO - HS stamps): n=1371  median  +796  p10  +481  p90  +961  min  +311  max +1491 ms
+
+== Left foot, contact detector
+   reference landings 1542 | HS events 1548 | landings missed 7 | HS at toe-off 0 | other unmatched HS 14 | HS pairs < 400 ms apart 0
+   TO events 1573, of which not followed by a swing 185
+   HS detect - first contact (jerk, else zc): n=1535  median   -40  p10  -131  p90    +9  min  -260  max  +261 ms
+   HS detect - gyro zero-cross            : n=1535  median   -80  p10  -150  p90   -19  min  -300  max    +0 ms
+   HS detect - wheel kick (independent)   : n=1361  median   -62  p10  -154  p90   +11  min  -302  max  +195 ms
+   stance seen by the estimator (TO - HS stamps): n=1412  median  +941  p10  +830  p90 +1101  min  +310  max +1492 ms
+
+== Right foot, old detector
+   reference landings 1571 | HS events 1464 | landings missed 244 | HS at toe-off 125 | other unmatched HS 15 | HS pairs < 400 ms apart 0
+   TO events 1512, of which not followed by a swing 287
+   HS detect - first contact (jerk, else zc): n=1327  median  +139  p10  -247  p90  +230  min  -400  max  +390 ms
+   HS detect - gyro zero-cross            : n=1327  median  +112  p10  -259  p90  +151  min  -400  max  +300 ms
+   HS detect - wheel kick (independent)   : n=881  median  +107  p10  -164  p90  +210  min  -444  max  +400 ms
+   stance seen by the estimator (TO - HS stamps): n=1358  median  +796  p10  +529  p90  +959  min  +319  max +1499 ms
+
+== Right foot, contact detector
+   reference landings 1571 | HS events 1570 | landings missed 4 | HS at toe-off 0 | other unmatched HS 6 | HS pairs < 400 ms apart 0
+   TO events 1570, of which not followed by a swing 86
+   HS detect - first contact (jerk, else zc): n=1567  median   -91  p10  -151  p90    +0  min  -349  max   +90 ms
+   HS detect - gyro zero-cross            : n=1567  median  -120  p10  -160  p90   -60  min  -349  max    +0 ms
+   HS detect - wheel kick (independent)   : n=969  median  -126  p10  -180  p90    +0  min  -318  max   +96 ms
+   stance seen by the estimator (TO - HS stamps): n=1410  median  +947  p10  +849  p90 +1139  min  +309  max +1498 ms
+
+== triggered AfterHS slips: logged fire vs where the contact detector fires
+   log    foot  t_fire   fired at            fire-contact  contact-det - contact (ms)
+   182914 Left    19.30  landing             +110          -160
+   200951 Right   22.07  landing             +149          -140
+   200951 Right   66.36  landing             +210          -40
+   201219 Right   15.34  landing             +160          -120
+   201219 Right   27.79  landing             +300          +0
+   201219 Right   52.42  landing             +179          -111
+   203549 Right   20.28  TOE-OFF (inverted)  None          no contact HS here
+   203549 Right   31.54  landing             +180          -120
+   203549 Right   49.30  landing             +300          -10
+   203549 Right   65.93  landing             +270          +0
+   203549 Right   97.16  landing             +290          +0
+   203549 Right  108.86  landing             +250          +0
+   204016 Right   14.23  landing             +240          +0
+   204016 Right   28.72  landing             +149          -161
+   204016 Right   58.73  landing             +200          -60
+   204016 Right   72.31  TOE-OFF (inverted)  None          no contact HS here
+   204016 Right   84.35  landing             +280          +0
+   204016 Right   93.42  TOE-OFF (inverted)  None          no contact HS here
+   204016 Right  104.30  TOE-OFF (inverted)  None          no contact HS here
+   204316 Right    5.31  TOE-OFF (inverted)  None          no contact HS here
+   204316 Right   15.38  landing             +250          +0
+   204316 Right   33.16  landing             +280          +0
+   204316 Right   46.30  landing             +309          +0
+   204316 Right   78.67  landing             +260          +0
+   204316 Right   87.33  landing             +220          +0
+   164310 Right   23.44  landing             +0            -80
+   164310 Right   64.46  landing             +0            -110
+   164310 Right   77.03  TOE-OFF (inverted)  None          contact detector also fires here!
+   164310 Right   90.93  TOE-OFF (inverted)  None          contact detector also fires here!
+   164310 Right  102.03  TOE-OFF (inverted)  None          contact detector also fires here!
+   173418 Right   40.29  TOE-OFF (inverted)  None          contact detector also fires here!
+   173418 Right   56.01  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   57.20  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   68.71  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   79.89  TOE-OFF (inverted)  None          contact detector also fires here!
+   110429 Right   83.86  landing             +0            -109
+   110429 Right   93.75  landing             +0            -110
+   110429 Right   98.57  landing             +0            -159
+   110429 Right  108.99  landing             +0            -110
+   110842 Right   13.18  TOE-OFF (inverted)  None          contact detector also fires here!
+   110842 Right   20.64  TOE-OFF (inverted)  None          contact detector also fires here!
+   110842 Right   24.56  TOE-OFF (inverted)  None          contact detector also fires here!
+   110957 Right   12.65  TOE-OFF (inverted)  None          contact detector also fires here!
+   110957 Right   22.89  landing             +0            -89
+   110957 Right   29.91  landing             +0            -120
+   110957 Right   40.93  landing             +0            -60
+   111344 Right   15.60  TOE-OFF (inverted)  None          contact detector also fires here!
+   111344 Right   21.08  TOE-OFF (inverted)  None          contact detector also fires here!
+   111344 Right   35.45  TOE-OFF (inverted)  None          contact detector also fires here!
+   111554 Right   16.22  landing             +0            -84
+   111554 Right   23.85  landing             +0            -50
+   111554 Right   39.67  TOE-OFF (inverted)  None          contact detector also fires here!
+   111554 Right   47.67  landing             +0            -25
+   111554 Right   80.05  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   12.36  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   22.56  landing             +0            -69
+   112343 Right   27.02  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   38.71  landing             +0            -70
+   112343 Right   53.14  landing             +0            -110
+   112343 Right   68.92  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right   73.33  landing             +0            -79
+   112343 Right   81.69  TOE-OFF (inverted)  None          contact detector also fires here!
+   112343 Right  100.32  TOE-OFF (inverted)  None          contact detector also fires here!
+   112658 Right   13.33  TOE-OFF (inverted)  None          contact detector also fires here!
+   112658 Right   24.27  TOE-OFF (inverted)  None          contact detector also fires here!
+   112820 Right   14.41  landing             +100          -10
+   112820 Right   25.27  landing             +100          +0
+   112820 Right   39.63  landing             +100          -90
+   112820 Right   46.53  landing             +100          -104
+   112820 Right   59.26  landing             +100          -100
+   112820 Right   81.90  landing             +100          +0
+   112820 Right   92.59  landing             +100          +0
+   112820 Right   96.98  landing             +100          +0
+   112820 Right  107.98  landing             +100          +0
+   112820 Right  113.58  landing             +100          -100
+   112820 Right  120.87  landing             +100          +0
+   112820 Right  124.97  landing             +100          +0
+   113527 Right   12.74  landing             +200          -138
+   113527 Right   22.95  landing             +200          -130
+   113527 Right   28.21  landing             +200          -120
+   113527 Right   44.79  landing             +200          -125
+   113527 Right   56.92  landing             +200          -10
+   113527 Right   61.26  landing             +201          -101
+   113527 Right   76.07  landing             +200          -20
+   113527 Right   80.50  landing             +200          -29
+   113527 Right   95.31  landing             +200          -79
+   113527 Right  100.49  landing             +200          -10
+
+############ scripts/assess_to_detection.py : baseline
+===== Left
+  on-ground lower bound zc->trough     n=1424 median   +901  p10   +801  p90  +1092  min   +331 max  +1791
+    slap: zc->flat                     n=1424 median    +50  p10     +0  p90   +140  min     +0 max   +190
+    foot-flat |gz|<0.3                 n=1424 median   +680  p10   +530  p90   +881  min   +141 max  +1681
+    heel-rise+push-off: flat->trough   n=1424 median   +170  p10   +120  p90   +230  min    +29 max   +531
+  swing: trough->zc                    n=1423 median   +431  p10   +381  p90   +480  min   +140 max   +801
+  cycle zc->zc                         n=1423 median  +1332  p10  +1202  p90  +1542  min   +681 max  +2252
+  stance % lower bound                 n=1423 median    +68  p10    +65  p90    +72  min    +45 max    +89
+  -- old : ref push-offs 1555, missed 484, TO events not at a push-off 456
+  old TO detect - raw trough           n=1071 median    +51  p10    +49  p90    +61  min   -250 max   +290
+  old TO stamp  - raw trough           n=1071 median    -10  p10    -11  p90     +0  min   -360 max   +240
+  old TO detect - swing>1.5 onset      n=1071 median    -10  p10    -70  p90     +0  min   -520 max   +140
+        old no swing after (turn/shuffle/stand) 182 [('164042', 18.52), ('183225', 2.7), ('183225', 4.2), ('183225', 5.53)]
+        old weak swing after 36 [('182914', 27.26), ('182914', 31.23), ('200611', 72.53), ('200951', 38.07)]
+        old slap trough (HS<500ms ago) 237 [('183225', 9.33), ('183225', 10.61), ('183225', 11.93), ('183225', 13.19)]
+        old during/after slip 1 [('183225', 18.51)]
+  -- contact : ref push-offs 1555, missed 47, TO events not at a push-off 65
+  contact TO detect - raw trough       n=1508 median    +51  p10    +49  p90    +61  min   -250 max   +250
+  contact TO stamp  - raw trough       n=1508 median    -10  p10    -11  p90     +0  min   -360 max    +90
+  contact TO detect - swing>1.5 onset  n=1508 median    -10  p10    -70  p90     +0  min   -520 max    +12
+        contact weak swing after 43 [('182914', 27.26), ('182914', 31.23), ('200611', 72.53), ('200951', 38.07)]
+        contact no swing after (turn/shuffle/stand) 21 [('183225', 2.7), ('203549', 109.81), ('164617', 31.44), ('173043', 6.44)]
+        contact slap trough (HS<500ms ago) 1 [('113527', 95.97)]
+  contact-mode missed push-offs: filtered trough depths [-6.0, -5.6, -5.4, -5.3, -4.9, -4.7, -4.7, -4.6, -4.5, -4.5, -4.4, -4.4, -4.4, -4.2, -4.0, -4.0, -4.0, -3.9, -3.9, -3.8, -3.7, -3.7, -3.5, -3.5, -3.4, -3.4, -3.4, -3.3, -3.1, -3.0, -2.9, -2.3, -1.7, -1.7, -1.7, -1.6, -1.6, -1.6, -1.6, -1.6]
+===== Right
+  on-ground lower bound zc->trough     n=1445 median   +879  p10   +779  p90  +1099  min   +630 max  +1798
+    slap: zc->flat                     n=1445 median    +70  p10     +0  p90   +139  min     +0 max   +240
+    foot-flat |gz|<0.3                 n=1445 median   +620  p10   +480  p90   +859  min   +319 max  +1678
+    heel-rise+push-off: flat->trough   n=1445 median   +200  p10   +130  p90   +260  min    +10 max   +470
+  swing: trough->zc                    n=1444 median   +459  p10   +390  p90   +519  min   +150 max   +760
+  cycle zc->zc                         n=1444 median  +1339  p10  +1229  p90  +1550  min   +889 max  +2287
+  stance % lower bound                 n=1444 median    +66  p10    +63  p90    +72  min    +50 max    +89
+  -- old : ref push-offs 1571, missed 307, TO events not at a push-off 254
+  old TO detect - raw trough           n=1264 median    +53  p10    +49  p90    +80  min   -120 max   +248
+  old TO stamp  - raw trough           n=1264 median    -10  p10    -20  p90     +5  min   -209 max   +219
+  old TO detect - swing>1.5 onset      n=1264 median    -30  p10    -90  p90     +0  min   -360 max   +199
+        old no swing after (turn/shuffle/stand) 131 [('164302', 14.65), ('182914', 39.69), ('200611', 51.45), ('200611', 52.99)]
+        old slap trough (HS<500ms ago) 82 [('200951', 81.32), ('200951', 82.67), ('200951', 84.08), ('201133', 9.37)]
+        old weak swing after 12 [('200951', 99.14), ('204316', 55.87), ('165919', 8.56), ('173043', 86.87)]
+        old during/after slip 29 [('201133', 13.35), ('203549', 20.77), ('203549', 49.27), ('203549', 108.85)]
+  -- contact : ref push-offs 1571, missed 34, TO events not at a push-off 32
+  contact TO detect - raw trough       n=1537 median    +51  p10    +49  p90    +79  min   -120 max   +170
+  contact TO stamp  - raw trough       n=1537 median    -10  p10    -20  p90     +1  min   -209 max    +99
+  contact TO detect - swing>1.5 onset  n=1537 median    -30  p10    -90  p90     +0  min   -360 max    +11
+        contact no swing after (turn/shuffle/stand) 11 [('164302', 14.65), ('182914', 41.63), ('201219', 78.62), ('203549', 13.77)]
+        contact weak swing after 14 [('200951', 99.14), ('204316', 55.87), ('165919', 8.56), ('173043', 86.87)]
+        contact during/after slip 7 [('204016', 94.03), ('164310', 65.7), ('173310', 25.22), ('110957', 23.15)]
+  contact-mode missed push-offs: filtered trough depths [-3.9, -2.5, -1.7, -1.7, -1.7, -1.7, -1.7, -1.7, -1.7, -1.6, -1.6, -1.6, -1.6, -1.6, -1.6, -1.5, -1.5, -1.5, -1.5, -1.5, -1.5, -1.4, -1.4, -1.3, -1.3, -1.3, -1.2, -1.2, -1.2, -1.0, -1.0, -0.9, -0.8, -0.8]
+
+############ scripts/assess_to_detection.py : committed yaml (C1+C2)
+===== Left
+  on-ground lower bound zc->trough     n=1424 median   +901  p10   +801  p90  +1092  min   +331 max  +1791
+    slap: zc->flat                     n=1424 median    +50  p10     +0  p90   +140  min     +0 max   +190
+    foot-flat |gz|<0.3                 n=1424 median   +680  p10   +530  p90   +881  min   +141 max  +1681
+    heel-rise+push-off: flat->trough   n=1424 median   +170  p10   +120  p90   +230  min    +29 max   +531
+  swing: trough->zc                    n=1423 median   +431  p10   +381  p90   +480  min   +140 max   +801
+  cycle zc->zc                         n=1423 median  +1332  p10  +1202  p90  +1542  min   +681 max  +2252
+  stance % lower bound                 n=1423 median    +68  p10    +65  p90    +72  min    +45 max    +89
+  -- old : ref push-offs 1555, missed 484, TO events not at a push-off 456
+  old TO detect - raw trough           n=1071 median    +51  p10    +49  p90    +61  min   -250 max   +290
+  old TO stamp  - raw trough           n=1071 median    -10  p10    -11  p90     +0  min   -360 max   +240
+  old TO detect - swing>1.5 onset      n=1071 median    -10  p10    -70  p90     +0  min   -520 max   +140
+        old no swing after (turn/shuffle/stand) 182 [('164042', 18.52), ('183225', 2.7), ('183225', 4.2), ('183225', 5.53)]
+        old weak swing after 36 [('182914', 27.26), ('182914', 31.23), ('200611', 72.53), ('200951', 38.07)]
+        old slap trough (HS<500ms ago) 237 [('183225', 9.33), ('183225', 10.61), ('183225', 11.93), ('183225', 13.19)]
+        old during/after slip 1 [('183225', 18.51)]
+  -- contact : ref push-offs 1555, missed 47, TO events not at a push-off 68
+  contact TO detect - raw trough       n=1508 median    +51  p10    +49  p90    +61  min   -250 max   +250
+  contact TO stamp  - raw trough       n=1508 median    -40  p10    -41  p90    -30  min   -390 max    +60
+  contact TO detect - swing>1.5 onset  n=1508 median    -10  p10    -70  p90     +0  min   -520 max    +12
+        contact weak swing after 44 [('182914', 27.26), ('182914', 31.23), ('200611', 72.53), ('200951', 38.07)]
+        contact no swing after (turn/shuffle/stand) 20 [('183225', 2.7), ('203549', 109.81), ('164617', 31.44), ('173043', 6.44)]
+        contact slap trough (HS<500ms ago) 4 [('112343', 23.83), ('112343', 54.45), ('112820', 47.06), ('113527', 95.97)]
+  contact-mode missed push-offs: filtered trough depths [-6.0, -5.6, -5.4, -5.3, -4.9, -4.7, -4.7, -4.6, -4.5, -4.5, -4.4, -4.4, -4.4, -4.2, -4.0, -4.0, -4.0, -3.9, -3.9, -3.8, -3.7, -3.7, -3.5, -3.5, -3.4, -3.4, -3.4, -3.3, -3.1, -3.0, -2.9, -2.3, -1.7, -1.7, -1.7, -1.6, -1.6, -1.6, -1.6, -1.6]
+===== Right
+  on-ground lower bound zc->trough     n=1445 median   +879  p10   +779  p90  +1099  min   +630 max  +1798
+    slap: zc->flat                     n=1445 median    +70  p10     +0  p90   +139  min     +0 max   +240
+    foot-flat |gz|<0.3                 n=1445 median   +620  p10   +480  p90   +859  min   +319 max  +1678
+    heel-rise+push-off: flat->trough   n=1445 median   +200  p10   +130  p90   +260  min    +10 max   +470
+  swing: trough->zc                    n=1444 median   +459  p10   +390  p90   +519  min   +150 max   +760
+  cycle zc->zc                         n=1444 median  +1339  p10  +1229  p90  +1550  min   +889 max  +2287
+  stance % lower bound                 n=1444 median    +66  p10    +63  p90    +72  min    +50 max    +89
+  -- old : ref push-offs 1571, missed 307, TO events not at a push-off 254
+  old TO detect - raw trough           n=1264 median    +53  p10    +49  p90    +80  min   -120 max   +248
+  old TO stamp  - raw trough           n=1264 median    -10  p10    -20  p90     +5  min   -209 max   +219
+  old TO detect - swing>1.5 onset      n=1264 median    -30  p10    -90  p90     +0  min   -360 max   +199
+        old no swing after (turn/shuffle/stand) 131 [('164302', 14.65), ('182914', 39.69), ('200611', 51.45), ('200611', 52.99)]
+        old slap trough (HS<500ms ago) 82 [('200951', 81.32), ('200951', 82.67), ('200951', 84.08), ('201133', 9.37)]
+        old weak swing after 12 [('200951', 99.14), ('204316', 55.87), ('165919', 8.56), ('173043', 86.87)]
+        old during/after slip 29 [('201133', 13.35), ('203549', 20.77), ('203549', 49.27), ('203549', 108.85)]
+  -- contact : ref push-offs 1571, missed 37, TO events not at a push-off 37
+  contact TO detect - raw trough       n=1534 median    +51  p10    +49  p90    +79  min   -120 max   +170
+  contact TO stamp  - raw trough       n=1534 median    -40  p10    -50  p90    -30  min   -239 max    +69
+  contact TO detect - swing>1.5 onset  n=1534 median    -30  p10    -90  p90     +0  min   -360 max    +11
+        contact no swing after (turn/shuffle/stand) 12 [('164302', 14.65), ('182914', 39.69), ('182914', 41.63), ('201219', 78.62)]
+        contact slap trough (HS<500ms ago) 3 [('183127', 32.07), ('204316', 80.64), ('164310', 70.48)]
+        contact weak swing after 14 [('200951', 99.14), ('204316', 55.87), ('165919', 8.56), ('173043', 86.87)]
+        contact during/after slip 8 [('204016', 94.03), ('164310', 65.7), ('165919', 73.42), ('173310', 25.22)]
+  contact-mode missed push-offs: filtered trough depths [-3.9, -3.4, -3.3, -2.5, -1.8, -1.7, -1.7, -1.7, -1.7, -1.7, -1.7, -1.7, -1.6, -1.6, -1.6, -1.6, -1.6, -1.6, -1.5, -1.5, -1.5, -1.5, -1.5, -1.5, -1.4, -1.4, -1.3, -1.3, -1.3, -1.2, -1.2, -1.2, -1.0, -1.0, -0.9, -0.8, -0.8]
+
+############ scripts/assess_to_detection.py : committed yaml + C3
+===== Left
+  on-ground lower bound zc->trough     n=1424 median   +901  p10   +801  p90  +1092  min   +331 max  +1791
+    slap: zc->flat                     n=1424 median    +50  p10     +0  p90   +140  min     +0 max   +190
+    foot-flat |gz|<0.3                 n=1424 median   +680  p10   +530  p90   +881  min   +141 max  +1681
+    heel-rise+push-off: flat->trough   n=1424 median   +170  p10   +120  p90   +230  min    +29 max   +531
+  swing: trough->zc                    n=1423 median   +431  p10   +381  p90   +480  min   +140 max   +801
+  cycle zc->zc                         n=1423 median  +1332  p10  +1202  p90  +1542  min   +681 max  +2252
+  stance % lower bound                 n=1423 median    +68  p10    +65  p90    +72  min    +45 max    +89
+  -- old : ref push-offs 1555, missed 484, TO events not at a push-off 456
+  old TO detect - raw trough           n=1071 median    +51  p10    +49  p90    +61  min   -250 max   +290
+  old TO stamp  - raw trough           n=1071 median    -10  p10    -11  p90     +0  min   -360 max   +240
+  old TO detect - swing>1.5 onset      n=1071 median    -10  p10    -70  p90     +0  min   -520 max   +140
+        old no swing after (turn/shuffle/stand) 182 [('164042', 18.52), ('183225', 2.7), ('183225', 4.2), ('183225', 5.53)]
+        old weak swing after 36 [('182914', 27.26), ('182914', 31.23), ('200611', 72.53), ('200951', 38.07)]
+        old slap trough (HS<500ms ago) 237 [('183225', 9.33), ('183225', 10.61), ('183225', 11.93), ('183225', 13.19)]
+        old during/after slip 1 [('183225', 18.51)]
+  -- contact : ref push-offs 1555, missed 60, TO events not at a push-off 82
+  contact TO detect - raw trough       n=1495 median    -50  p10    -71  p90    +10  min   -240 max    +90
+  contact TO stamp  - raw trough       n=1495 median    -50  p10    -71  p90     +9  min   -240 max    +60
+  contact TO detect - swing>1.5 onset  n=1495 median   -120  p10   -160  p90    -80  min   -501 max    +10
+        contact weak swing after 52 [('182914', 27.18), ('182914', 31.23), ('200611', 72.47), ('200951', 38.01)]
+        contact no swing after (turn/shuffle/stand) 26 [('183225', 2.7), ('203549', 109.77), ('164310', 102.25), ('164617', 31.44)]
+        contact slap trough (HS<500ms ago) 4 [('112343', 23.83), ('112343', 54.45), ('112820', 47.06), ('113527', 95.97)]
+  contact-mode missed push-offs: filtered trough depths [-6.0, -5.6, -5.4, -4.9, -4.9, -4.7, -4.7, -4.7, -4.6, -4.5, -4.5, -4.4, -4.4, -4.4, -4.2, -4.0, -4.0, -4.0, -3.9, -3.9, -3.8, -3.8, -3.7, -3.7, -3.7, -3.6, -3.5, -3.5, -3.4, -3.4, -3.4, -3.3, -3.3, -3.1, -3.1, -3.0, -2.9, -2.9, -2.8, -2.3]
+===== Right
+  on-ground lower bound zc->trough     n=1445 median   +879  p10   +779  p90  +1099  min   +630 max  +1798
+    slap: zc->flat                     n=1445 median    +70  p10     +0  p90   +139  min     +0 max   +240
+    foot-flat |gz|<0.3                 n=1445 median   +620  p10   +480  p90   +859  min   +319 max  +1678
+    heel-rise+push-off: flat->trough   n=1445 median   +200  p10   +130  p90   +260  min    +10 max   +470
+  swing: trough->zc                    n=1444 median   +459  p10   +390  p90   +519  min   +150 max   +760
+  cycle zc->zc                         n=1444 median  +1339  p10  +1229  p90  +1550  min   +889 max  +2287
+  stance % lower bound                 n=1444 median    +66  p10    +63  p90    +72  min    +50 max    +89
+  -- old : ref push-offs 1571, missed 307, TO events not at a push-off 254
+  old TO detect - raw trough           n=1264 median    +53  p10    +49  p90    +80  min   -120 max   +248
+  old TO stamp  - raw trough           n=1264 median    -10  p10    -20  p90     +5  min   -209 max   +219
+  old TO detect - swing>1.5 onset      n=1264 median    -30  p10    -90  p90     +0  min   -360 max   +199
+        old no swing after (turn/shuffle/stand) 131 [('164302', 14.65), ('182914', 39.69), ('200611', 51.45), ('200611', 52.99)]
+        old slap trough (HS<500ms ago) 82 [('200951', 81.32), ('200951', 82.67), ('200951', 84.08), ('201133', 9.37)]
+        old weak swing after 12 [('200951', 99.14), ('204316', 55.87), ('165919', 8.56), ('173043', 86.87)]
+        old during/after slip 29 [('201133', 13.35), ('203549', 20.77), ('203549', 49.27), ('203549', 108.85)]
+  -- contact : ref push-offs 1571, missed 33, TO events not at a push-off 38
+  contact TO detect - raw trough       n=1538 median    -51  p10    -80  p90    +10  min   -189 max   +110
+  contact TO stamp  - raw trough       n=1538 median    -51  p10    -80  p90    +10  min   -189 max    +80
+  contact TO detect - swing>1.5 onset  n=1538 median   -149  p10   -200  p90    -99  min   -430 max     +0
+        contact no swing after (turn/shuffle/stand) 12 [('164302', 14.65), ('182914', 39.69), ('182914', 41.63), ('201219', 78.59)]
+        contact slap trough (HS<500ms ago) 3 [('183127', 32.07), ('204316', 80.64), ('164310', 70.48)]
+        contact weak swing after 14 [('200951', 99.11), ('204316', 55.81), ('165919', 8.56), ('173043', 86.82)]
+        contact during/after slip 9 [('204016', 94.0), ('164310', 65.66), ('165919', 73.42), ('173310', 25.18)]
+  contact-mode missed push-offs: filtered trough depths [-2.5, -1.7, -1.7, -1.7, -1.7, -1.7, -1.7, -1.7, -1.6, -1.6, -1.6, -1.6, -1.6, -1.6, -1.5, -1.5, -1.5, -1.5, -1.5, -1.5, -1.4, -1.4, -1.3, -1.3, -1.3, -1.2, -1.2, -1.2, -1.0, -1.0, -0.9, -0.8, -0.8]

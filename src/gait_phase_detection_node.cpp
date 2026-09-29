@@ -17,6 +17,9 @@ GaitPhaseDetectionNode::GaitPhaseDetectionNode(const Config& cfg, DataBus& bus)
                                cfg.gait_thresholds.hs_impact_threshold);
         fsm->set_filter_window(cfg.gait_ma_window);
         fsm->set_contact_hs(cfg.gait_hs_contact_detection, cfg.gait_hs_contact);
+        fsm->set_to_event_offset_ms(cfg.gait_to_event_offset_ms);
+        fsm->set_to_inflection(cfg.gait_to_inflection_detection, cfg.gait_to_inflection_ratio,
+                               cfg.gait_to_inflection_min_armed_ms);
     }
 }
 

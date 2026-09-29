@@ -230,11 +230,16 @@ Config load_config(const std::string& path) {
     apply_int(kv, "gait_detection.hs_contact.swing_min_ms", cfg.gait_hs_contact.swing_min_ms);
     apply_float(kv, "gait_detection.hs_contact.jerk_threshold", cfg.gait_hs_contact.jerk_threshold);
     apply_float(kv, "gait_detection.hs_contact.jerk_gyro_drop", cfg.gait_hs_contact.jerk_gyro_drop);
+    apply_float(kv, "gait_detection.hs_contact.contact_gyro_max", cfg.gait_hs_contact.contact_gyro_max);
     apply_int(kv, "gait_detection.hs_contact.jerk_holdoff_ms", cfg.gait_hs_contact.jerk_holdoff_ms);
     apply_float(kv, "gait_detection.hs_contact.flat_gyro_max", cfg.gait_hs_contact.flat_gyro_max);
     apply_int(kv, "gait_detection.hs_contact.flat_min_ms", cfg.gait_hs_contact.flat_min_ms);
     apply_int(kv, "gait_detection.hs_contact.settle_timeout_ms", cfg.gait_hs_contact.settle_timeout_ms);
     apply_int(kv, "gait_detection.hs_contact.flat_reset_ms", cfg.gait_hs_contact.flat_reset_ms);
+    apply_int(kv, "gait_detection.to_event_offset_ms", cfg.gait_to_event_offset_ms);
+    apply_bool(kv, "gait_detection.to_inflection_detection", cfg.gait_to_inflection_detection);
+    apply_float(kv, "gait_detection.to_inflection_ratio", cfg.gait_to_inflection_ratio);
+    apply_int(kv, "gait_detection.to_inflection_min_armed_ms", cfg.gait_to_inflection_min_armed_ms);
     apply_int(kv, "gait_detection.gravity_calib_samples", cfg.gravity_calib_samples);
 
     for (const char* phase : {"Stance", "Swing"}) {

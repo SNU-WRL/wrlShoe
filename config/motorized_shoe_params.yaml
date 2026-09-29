@@ -90,10 +90,17 @@ gait_detection:
   # phase-inverted for 15% of HS events (5 of 24 slips fired at toe-off): one
   # weak trough flips the Stance/Swing parity until a >2 s pause.
   # When true: HS requires swing evidence (raw gyro_z > swing_gyro_min for
-  # swing_min_ms), then fires on the first of a contact impact (accel change
-  # >= jerk_threshold m/s^2 between consecutive samples, once gyro_z is
-  # jerk_gyro_drop below its swing peak and jerk_holdoff_ms after the evidence)
-  # or raw gyro_z < 0. The HS event time is the firing sample (not back-dated),
+  # swing_min_ms), then fires on the first of the contact test (raw gyro_z has
+  # dropped jerk_gyro_drop below its swing peak, jerk_holdoff_ms after the
+  # evidence, and -- only if jerk_threshold > 0 -- the accel changed by >=
+  # jerk_threshold m/s^2 since the previous sample) or raw gyro_z < 0. The
+  # accel test is disabled (jerk_threshold 0) since 2026-09-22: the heel lands
+  # on wheels, so there is no accel jump at contact (mocap: median 3 m/s^2,
+  # >= 8 in 3-12 % of strides) and the accel path fired at the forefoot slap,
+  # ~115 ms after contact; the gyro dropping off its swing plateau is at
+  # contact (mocap +21 ms median with jerk_gyro_drop 1.5). Do not go below
+  # 1.5 (1.0 fires > 60 ms early on ~10 % of strides); 2.0 is the conservative
+  # alternative (+34/+50 ms). The HS event time is the firing sample (not back-dated),
   # so measured stance times grow by ~100-150 ms vs the old detector. TO arms
   # only after foot-flat (|filtered gyro_z| < flat_gyro_max for flat_min_ms, or
   # settle_timeout_ms after HS). A flat foot for flat_reset_ms while in Swing
@@ -110,13 +117,35 @@ gait_detection:
   hs_contact:
     swing_gyro_min: 1.5
     swing_min_ms: 50
-    jerk_threshold: 8.0
-    jerk_gyro_drop: 0.5
+    jerk_threshold: 0.0     # was 8.0 until 2026-09-22 (see above); <= 0 disables the accel test
+    jerk_gyro_drop: 1.5     # was 0.5; fire when raw gyro_z is 1.5 rad/s below its swing peak
+    # Cap on the contact test: also require raw gyro_z < this (rad/s); 0 = off.
+    # Without it the peak-relative drop fires on the descent from a high
+    # mid-swing peak with the gyro still at 2.6-3.5 rad/s (24 % of right-foot
+    # HS on the 2026-09-22 logs); 2.5 removes those (0 %) and moves the median
+    # HS by only 9 ms. Not mocap-verified: check against mocap before relying
+    # on the absolute timing.
+    contact_gyro_max: 2.5
     jerk_holdoff_ms: 100
     flat_gyro_max: 0.5
     flat_min_ms: 100
     settle_timeout_ms: 400
     flat_reset_ms: 200
+  # Constant added to the TO event timestamp (ms), contact mode only. The
+  # back-dated MA5 gyro trough sits ~+30 ms after the front edge of the shoe
+  # leaves the ground (mocap 2026-09-15/22, 5 takes, 369 strides); -30 makes
+  # the stance estimate unbiased. The Stance->Swing state change is not moved.
+  to_event_offset_ms: -30
+  # TO inflection trigger (contact mode only). Declares TO when the MA5 gyro_z
+  # descent has decelerated to to_inflection_ratio x its steepest slope while
+  # still descending and still below to_threshold: that inflection is where
+  # the loaded front edge leaves the ground (mocap 2026-09-22: median -8 ms vs
+  # lift-off, 5th-95th pct -50..+23 ms, 328 strides), ~100 ms before the
+  # re-cross that declares TO otherwise. The trough/re-cross detector stays
+  # as the fallback for shallow push-offs. Replay-validated 2026-09-22.
+  to_inflection_detection: false
+  to_inflection_ratio: 0.5        # 0.4 = later/safer but ~2 % fewer detections; do not go below 0.3
+  to_inflection_min_armed_ms: 30  # ignore the inflection test this long after the down-cross (early-fire guard)
   # DEPRECATED: gravity estimation is no longer on the FSM path (the gyro-only
   # two-state machine doesn't use free acceleration). Parsed but unused.
   gravity_calib_samples: 60
@@ -170,11 +199,11 @@ elmo_config:
 slip_perturbation:
   enabled: true
   foot: "Right"
-  slip_velocity: 200000
+  slip_velocity: 250000
   slip_duration_ms: 500
   mode1_delay_after_hs_ms: 0
   # Forward-slip lead before the predicted toe-off (ms).
-  to_slip_lead_ms: 50
+  to_slip_lead_ms: 250
   # Stance estimator for the forward (BeforeTO) slip. Prediction = median
   # stance FRACTION (stance / HS->HS period) over the last stance_est_window
   # clean cycles, times the period of the cycle that just completed (falls
