@@ -159,3 +159,10 @@ ERROR-ACTIVE and RX/TX packets must count up.
   moves the TO event stamp onto the mocap lift-off; and `to_inflection_detection: true`
   (default off) declares TO at the inflection of the gyro descent, ~100 ms before the
   re-cross, with the trough detector as fallback. Rollback = the yaml keys.
+- Slip timing by stance phase (`motorized_shoe_slip_app`): key `1` = early stance
+  (heel strike + `mode1_delay_after_hs_ms`), `3` = mid stance (foot-flat +
+  `mid_stance_delay_ms`), `2` = late stance (heel-off + `late_stance_delay_ms`).
+  Foot-flat (FF) and heel-off (HO) are events from the gait FSM
+  (`gait_detection.stance_events`, contact HS mode only). The stance estimator no
+  longer schedules slips; it prints its prediction next to the measured stance.
+  Replay: `docs/stance_phase_slips_replay_2026-09-29.txt`.

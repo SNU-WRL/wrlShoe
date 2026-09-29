@@ -63,6 +63,53 @@ void GaitEventFSM::set_to_inflection(bool enabled, float ratio, int min_armed_ms
     to_inflection_min_armed_samples_ = ms_to_samples(min_armed_ms, fs_);
 }
 
+void GaitEventFSM::set_stance_events(bool enabled, const StanceEventParams& params) {
+    stance_events_ = enabled;
+    stance_ev_ = params;
+    ff_min_samples_ = ms_to_samples(params.ff_min_ms, fs_);
+    ho_min_samples_ = ms_to_samples(params.ho_min_ms, fs_);
+    ho_max_samples_ = ms_to_samples(params.ho_max_after_hs_ms, fs_);
+}
+
+void GaitEventFSM::reset_stance_subphase() {
+    hs_in_stance_ = false;
+    ff_run_ = 0;
+    ff_seen_ = false;
+    ho_run_ = 0;
+    ho_seen_ = false;
+}
+
+void GaitEventFSM::step_stance_subphase(GaitEvent& event, float gyro_raw, float gyro_f,
+                                        int64_t timestamp_ns) {
+    if (!hs_in_stance_) {
+        return;
+    }
+    if (!ff_seen_) {
+        // Foot-flat: the raw gyro reads ~0 once the forefoot is down; no
+        // filtering needed, and the MA would only add delay.
+        ff_run_ = (std::fabs(gyro_raw) < stance_ev_.ff_gyro_max) ? ff_run_ + 1 : 0;
+        if (ff_run_ >= ff_min_samples_) {
+            ff_seen_ = true;
+            event.event_detected = true;
+            event.event_label = "FF";
+            event.event_timestamp_ns = timestamp_ns;
+            ++detection_count_;
+        }
+        return;
+    }
+    if (!ho_seen_ && state_dwell_samples_ <= ho_max_samples_) {
+        // Heel-off: the foot starts pitching nose-down about its front edge.
+        ho_run_ = (gyro_f < stance_ev_.ho_gyro_threshold) ? ho_run_ + 1 : 0;
+        if (ho_run_ >= ho_min_samples_) {
+            ho_seen_ = true;
+            event.event_detected = true;
+            event.event_label = "HO";
+            event.event_timestamp_ns = timestamp_ns;
+            ++detection_count_;
+        }
+    }
+}
+
 void GaitEventFSM::reset_to_inflection_state() {
     to_armed_ = false;
     to_min_slope_ = 0.0f;
@@ -179,6 +226,7 @@ GaitEventFSM::GaitEvent GaitEventFSM::check_state_transition(float gyro_z, float
         stance_settled_ = true;
         flat_run_ = 0;
         reset_to_inflection_state();
+        reset_stance_subphase();
         have_prev_gyro_f_ = false;
         current_state_ = GaitState::Stance;
         // Published as an explicit "RESET" event (counted like any other
@@ -266,6 +314,7 @@ void GaitEventFSM::enter_swing_contact() {
     flat_run_ = 0;
     hs_detector_.reset();
     reset_to_inflection_state();
+    reset_stance_subphase();
 }
 
 GaitEventFSM::GaitEvent GaitEventFSM::step_contact_hs(GaitEvent event, float gyro_raw, float gyro_f,
@@ -390,6 +439,8 @@ GaitEventFSM::GaitEvent GaitEventFSM::step_contact_hs(GaitEvent event, float gyr
                 swing_evidence_ = false;
                 to_detector_.reset();
                 reset_to_inflection_state();
+                reset_stance_subphase();
+                hs_in_stance_ = true;
             } else if (flat_run_ >= flat_reset_samples_) {
                 // Foot flat and still while we say Swing: the landing never
                 // produced a trigger (weak / shuffled step). The HS time is
@@ -406,9 +457,15 @@ GaitEventFSM::GaitEvent GaitEventFSM::step_contact_hs(GaitEvent event, float gyr
                 have_last_hs_ = false;
                 to_detector_.reset();
                 hs_detector_.reset();
+                reset_stance_subphase();
             }
             break;
         }
+    }
+
+    // Stance sub-phase events ride on samples that produced no other event.
+    if (stance_events_ && !event.event_detected && current_state_ == GaitState::Stance) {
+        step_stance_subphase(event, gyro_raw, gyro_f, timestamp_ns);
     }
 
     event.state = current_state_;

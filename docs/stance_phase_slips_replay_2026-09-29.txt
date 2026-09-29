@@ -1,0 +1,70 @@
+# Stance sub-phase events (FF foot-flat, HO heel-off) and stance-phase slip triggers -- replay 2026-09-29
+# build/gait_fsm_replay config/motorized_shoe_params.yaml <logs> ; contact mode, C1+C2 on, to_inflection_detection false (as committed).
+# Heel-off ref = last raw gyro_z > -0.1 before the push-off (IMU-only); lift-off = TO event stamp (C2-corrected, mocap-unbiased).
+# Slip emulation: fire = event + delay; a mid/late-stance slip is cancelled if the stance ends (TO/HS/RESET declared) first.
+
+== parity: stance_events.enabled false vs the b1f17af binary + yaml: byte-identical, 15936 lines (45 logs).
+== stance_events.enabled true: every HS/TO/RESET/SWING event identical to off; 3431 FF, 3284 HO, none in old (trough) mode.
+
+=== latest logs (2026-09-22, 2026-09-23; 9 logs, both feet)
+stances: {'stance ended without TO': 35, 'strides': 975, 'slip strides (skipped)': 40, 'HO in a stance without TO': 17, 'no HO': 4, 'no FF': 2}
+  HS -> FF                   n= 973 median  +260 p10  +199 p90  +310 min   +49 max  +639
+  FF -> heel-off ref         n= 973 median  +520 p10  +440 p90  +660 min  +291 max +1762
+  HO detect - heel-off ref   n= 971 median   +40 p10   +31 p90   +50 min -1691 max  +140
+  HO -> lift-off (TO stamp)  n= 971 median  +100 p10   +60 p90  +150 min   -10 max +1741
+  HO -> TO declared          n= 971 median  +200 p10  +160 p90  +250 min   +70 max +1832
+mid stance, fire = FF + delay:
+  delay   0 ms: inside flat phase 973 (100.0%)
+  delay 100 ms: inside flat phase 973 (100.0%)
+  delay 200 ms: inside flat phase 973 (100.0%)
+  delay 250 ms: inside flat phase 973 (100.0%)
+  delay 300 ms: inside flat phase 971 (99.8%), after heel-off 2 (0.2%)
+  delay 400 ms: inside flat phase 938 (96.4%), after heel-off 35 (3.6%)
+late stance, fire = HO + delay (lift-off - fire, ms; drive needs 30-45 ms to reach speed):
+  delay  0 ms: n= 971 median  +100 p10   +60 p90  +150 min   -10 max +1741 | cancelled 0 of 971
+  delay 20 ms: n= 971 median   +80 p10   +40 p90  +130 min   -30 max +1721 | cancelled 0 of 971
+  delay 40 ms: n= 971 median   +60 p10   +20 p90  +110 min   -50 max +1701 | cancelled 0 of 971
+  delay 60 ms: n= 971 median   +40 p10    +0 p90   +90 min   -70 max +1681 | cancelled 0 of 971
+
+=== all 45 logs
+stances: {'stance ended without TO': 231, 'HO in a stance without TO': 116, 'strides': 2972, 'slip strides (skipped)': 214, 'no HO': 25, 'no FF': 10}
+  HS -> FF                   n=2962 median  +260 p10  +181 p90  +320 min   +45 max  +639
+  FF -> heel-off ref         n=2962 median  +531 p10  +430 p90  +701 min    +0 max +2157
+  HO detect - heel-off ref   n=2947 median   +40 p10   +30 p90   +50 min -1958 max  +180
+  HO -> lift-off (TO stamp)  n=2947 median  +110 p10   +60 p90  +180 min   -21 max +2010
+  HO -> TO declared          n=2947 median  +210 p10  +160 p90  +270 min   +41 max +2098
+mid stance, fire = FF + delay:
+  delay   0 ms: inside flat phase 2962 (100.0%)
+  delay 100 ms: inside flat phase 2954 (99.7%), after heel-off 8 (0.3%)
+  delay 200 ms: inside flat phase 2952 (99.7%), after heel-off 8 (0.3%), cancelled (TO first) 2 (0.1%)
+  delay 250 ms: inside flat phase 2946 (99.5%), after heel-off 11 (0.4%), cancelled (TO first) 5 (0.2%)
+  delay 300 ms: inside flat phase 2939 (99.2%), after heel-off 17 (0.6%), cancelled (TO first) 6 (0.2%)
+  delay 400 ms: inside flat phase 2799 (94.5%), after heel-off 156 (5.3%), cancelled (TO first) 7 (0.2%)
+late stance, fire = HO + delay (lift-off - fire, ms; drive needs 30-45 ms to reach speed):
+  delay  0 ms: n=2947 median  +110 p10   +60 p90  +180 min   -21 max +2010 | cancelled 0 of 2947
+  delay 20 ms: n=2947 median   +90 p10   +40 p90  +160 min   -41 max +1990 | cancelled 0 of 2947
+  delay 40 ms: n=2947 median   +70 p10   +20 p90  +140 min   -61 max +1970 | cancelled 0 of 2947
+  delay 60 ms: n=2942 median   +51 p10    +0 p90  +120 min   -81 max +1950 | cancelled 5 of 2947
+
+############ with to_inflection_detection: true (yaml as of 2026-09-29; lift-off = inflection TO stamp)
+=== latest logs (2026-09-22, 2026-09-23)
+stances: {'stance ended without TO': 35, 'strides': 976, 'slip strides (skipped)': 40, 'HO in a stance without TO': 17, 'no FF': 3, 'no HO': 5}
+  HS -> FF                   n= 973 median  +259 p10  +199 p90  +310 min   +49 max  +639
+  FF -> heel-off ref         n= 973 median  +520 p10  +440 p90  +660 min  +291 max +1762
+  HO detect - heel-off ref   n= 971 median   +40 p10   +31 p90   +50 min -1691 max  +140
+  HO -> lift-off (TO stamp)  n= 971 median   +90 p10   +60 p90  +140 min   +40 max +1741
+  HO -> TO declared          n= 971 median   +90 p10   +60 p90  +140 min   +40 max +1832
+mid stance, fire = FF + delay:
+  delay   0 ms: inside flat phase 973 (100.0%)
+  delay 100 ms: inside flat phase 973 (100.0%)
+  delay 200 ms: inside flat phase 973 (100.0%)
+  delay 250 ms: inside flat phase 973 (100.0%)
+  delay 300 ms: inside flat phase 971 (99.8%), after heel-off 2 (0.2%)
+  delay 400 ms: inside flat phase 938 (96.4%), after heel-off 35 (3.6%)
+late stance, fire = HO + delay (lift-off - fire, ms; drive needs 30-45 ms to reach speed):
+  delay  0 ms: n= 971 median   +90 p10   +60 p90  +140 min   +40 max +1741 | cancelled 0 of 971
+  delay 20 ms: n= 971 median   +70 p10   +40 p90  +120 min   +20 max +1721 | cancelled 0 of 971
+  delay 40 ms: n= 959 median   +50 p10   +20 p90  +100 min    +0 max +1701 | cancelled 12 of 971
+  delay 60 ms: n= 851 median   +40 p10   +10 p90   +80 min   -10 max +1681 | cancelled 120 of 971
+
+=== all 45 logs

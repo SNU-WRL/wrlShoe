@@ -110,6 +110,28 @@ public:
     // the fallback for shallow push-offs.
     void set_to_inflection(bool enabled, float ratio, int min_armed_ms);
 
+    // Contact mode only: stance sub-phase events, emitted once per stance that
+    // began with an HS (never after a RESET or while standing without one):
+    //   "FF" foot-flat: |raw gyro_z| < ff_gyro_max for ff_min_ms. Stamped at
+    //        the detecting sample (~50 ms into the flat phase). Early stance =
+    //        HS..FF, mid stance = FF..HO.
+    //   "HO" heel-off, only after FF: filtered gyro_z < ho_gyro_threshold for
+    //        ho_min_ms, and no later than ho_max_after_hs_ms after the HS (a
+    //        weight shift while standing is not a heel-off). Stamped at the
+    //        detecting sample (~40 ms after the gyro leaves zero). Late
+    //        stance = HO..TO.
+    // 2026-09-22/23 logs (997 strides): FF 259 ms after HS (p10 191, p90 310),
+    // found before heel-off in 995; HO leaves 100 ms (p10 60) before lift-off.
+    // The events do not change the Stance/Swing state or any other event.
+    struct StanceEventParams {
+        float ff_gyro_max = 0.3f;
+        int ff_min_ms = 50;
+        float ho_gyro_threshold = -0.3f;
+        int ho_min_ms = 20;
+        int ho_max_after_hs_ms = 1500;
+    };
+    void set_stance_events(bool enabled, const StanceEventParams& params);
+
     // Moving-average window (samples) on gyro_z. window <= 1 disables filtering.
     // The (window-1)/2-sample group delay is compensated for when back-dating
     // event timestamps.
@@ -124,6 +146,8 @@ public:
         // events (TO, HS) this is BACK-DATED to the trough sample (minus the
         // filter group delay), not the sample on which the event was declared.
         int64_t event_timestamp_ns = 0;
+        // "FF" / "HO" (contact mode with stance events on, see
+        // set_stance_events) mark foot-flat and heel-off inside a stance.
         // "TO" or "HS" on the firing sample, "RESET" when the resync guard
         // dropped the machine back to Stance, "SWING" (contact-HS mode only) when
         // swing evidence moved it to Swing without a toe-off event (no usable
@@ -197,6 +221,9 @@ private:
     GaitEvent step_contact_hs(GaitEvent event, float gyro_raw, float gyro_f, float gyro_f_slope,
                             float jerk, int64_t timestamp_ns);
     void reset_to_inflection_state();
+    void reset_stance_subphase();
+    void step_stance_subphase(GaitEvent& event, float gyro_raw, float gyro_f,
+                              int64_t timestamp_ns);
     void enter_swing_contact();
     static int ms_to_samples(int ms, float fs);
     bool contact_hs_ = false;
@@ -225,6 +252,18 @@ private:
     int to_armed_samples_ = 0;      // samples since arming
     float prev_gyro_f_ = 0.0f;      // previous filtered gyro_z (slope source)
     bool have_prev_gyro_f_ = false;
+
+    // Stance sub-phase events (see set_stance_events).
+    bool stance_events_ = false;
+    StanceEventParams stance_ev_;
+    int ff_min_samples_ = 5;
+    int ho_min_samples_ = 2;
+    int ho_max_samples_ = 150;
+    bool hs_in_stance_ = false;     // this stance began with an HS
+    int ff_run_ = 0;
+    bool ff_seen_ = false;
+    int ho_run_ = 0;
+    bool ho_seen_ = false;
 };
 
 }  // namespace motorized_shoe

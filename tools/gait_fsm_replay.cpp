@@ -61,6 +61,7 @@ void configure(GaitEventFSM& fsm, const Config& cfg, bool contact) {
     fsm.set_to_event_offset_ms(cfg.gait_to_event_offset_ms);
     fsm.set_to_inflection(cfg.gait_to_inflection_detection, cfg.gait_to_inflection_ratio,
                           cfg.gait_to_inflection_min_armed_ms);
+    fsm.set_stance_events(cfg.gait_stance_events, cfg.gait_stance_event_params);
 }
 
 void replay(const std::string& log, const char* foot, const std::vector<Sample>& samples,

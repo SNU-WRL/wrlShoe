@@ -143,9 +143,23 @@ gait_detection:
   # lift-off, 5th-95th pct -50..+23 ms, 328 strides), ~100 ms before the
   # re-cross that declares TO otherwise. The trough/re-cross detector stays
   # as the fallback for shallow push-offs. Replay-validated 2026-09-22.
-  to_inflection_detection: false
+  to_inflection_detection: true
   to_inflection_ratio: 0.5        # 0.4 = later/safer but ~2 % fewer detections; do not go below 0.3
   to_inflection_min_armed_ms: 30  # ignore the inflection test this long after the down-cross (early-fire guard)
+  # Stance sub-phase events (contact mode only), once per stance that began
+  # with an HS: early stance = HS..FF, mid stance = FF..HO, late stance =
+  # HO..TO. Used by the mid-/late-stance slip modes; they change no state or
+  # other event. 2026-09-22/23 logs, 997 strides: FF found before heel-off in
+  # 995, 259 ms after HS (p10 191, p90 310), heel-off never earlier than 291
+  # ms after it; HO detected 40 ms after the gyro leaves zero, leaving 100 ms
+  # (p10 60) before lift-off.
+  stance_events:
+    enabled: true
+    ff_gyro_max: 0.3          # FF: |raw gyro_z| below this (rad/s) ...
+    ff_min_ms: 50             # ... for this long
+    ho_gyro_threshold: -0.3   # HO: filtered gyro_z below this (rad/s) ...
+    ho_min_ms: 20             # ... for this long, after FF
+    ho_max_after_hs_ms: 1500  # no HO this long after the HS (standing weight shifts)
   # DEPRECATED: gravity estimation is no longer on the FSM path (the gyro-only
   # two-state machine doesn't use free acceleration). Parsed but unused.
   gravity_calib_samples: 60
@@ -188,23 +202,36 @@ elmo_config:
   stall_ms: 2000
 
 # Slip Perturbation (used by motorized_shoe_slip_app)
-# Two modes selectable from keyboard, both one-shot per keypress:
-#   mode1_key (AfterHS, backward slip): fires `mode1_delay_after_hs_ms` after the
-#                next HS event.
-#   mode2_key (BeforeTO, forward slip): PREDICTED, HS-anchored. On the next HS it
-#                schedules the slip for t_HS + max(0, stance_est - to_slip_lead_ms)
-#                so the -velocity burst lands ~to_slip_lead_ms before the predicted
-#                toe-off. stance_est is a running average of measured (TO-HS)
-#                stance times; a newer HS before firing cancels and reschedules.
+# Three modes selectable from keyboard, all one-shot per keypress and all
+# reacting to a detected event of the slip foot (nothing is predicted):
+#   mode1_key (early stance, backward +velocity): `mode1_delay_after_hs_ms`
+#                after the next heel strike (HS).
+#   mode3_key (mid stance): `mid_stance_delay_ms` after the next foot-flat
+#                (FF), direction `mid_stance_slip_direction`.
+#   mode2_key (late stance, forward -velocity): `late_stance_delay_ms` after
+#                the next heel-off (HO).
+# Modes 2/3 need gait_detection.hs_contact_detection and stance_events; a
+# mid/late-stance slip still waiting when the stance ends (TO/HS/RESET) is
+# cancelled as a missed trial.
 slip_perturbation:
   enabled: true
   foot: "Right"
   slip_velocity: 250000
   slip_duration_ms: 500
   mode1_delay_after_hs_ms: 0
-  # Forward-slip lead before the predicted toe-off (ms).
+  # Mid stance: delay after foot-flat (ms). 0-250 always lands in the flat
+  # phase (2026-09-22/23: heel-off >= 291 ms after FF); up to ~400 in 90 %.
+  mid_stance_delay_ms: 200
+  mid_stance_slip_direction: "forward"   # "forward" (-velocity) or "backward" (+velocity)
+  # Late stance: delay after heel-off (ms). HO leaves ~100 ms (p10 60) before
+  # lift-off and the drive needs 30-45 ms to reach speed, so keep this small.
+  late_stance_delay_ms: 0
+  # DEPRECATED: lead of the old estimator-predicted forward slip, replaced by
+  # the heel-off trigger. Parsed but unused.
   to_slip_lead_ms: 250
-  # Stance estimator for the forward (BeforeTO) slip. Prediction = median
+  # Stance estimator: DIAGNOSTIC ONLY since the heel-off trigger. Its
+  # prediction is printed when a slip fires and compared with the measured
+  # stance at the next toe-off; it schedules nothing. Prediction = median
   # stance FRACTION (stance / HS->HS period) over the last stance_est_window
   # clean cycles, times the period of the cycle that just completed (falls
   # back to the median absolute stance until a fraction exists). A stance is
@@ -213,9 +240,7 @@ slip_perturbation:
   # logs) and false events (90-350 ms) are rejected instead of averaged in.
   # An HS gap above stance_est_reset_gap_ms, an FSM resync, a drive fault or
   # an emergency stop reset the estimator; it then needs
-  # stance_est_warmup_cycles clean stances before mode 2 can schedule. A
-  # toe-off detected before the scheduled fire cancels that slip (missed
-  # trial) instead of firing with the foot in the air.
+  # stance_est_warmup_cycles clean stances before it predicts again.
   # Replay of the Sep 2026 logs picked window 3 / warm-up 1: same accuracy as
   # the old mean-of-2 on steady walking (median error 30 ms), no seconds-late
   # or in-swing fires after pauses, fewest skipped cycles after a reset.
@@ -235,6 +260,7 @@ slip_perturbation:
   slip_profile_acceleration: 5000000
   mode1_key: "1"
   mode2_key: "2"
+  mode3_key: "3"
 
 # Logging Configuration
 logging:
