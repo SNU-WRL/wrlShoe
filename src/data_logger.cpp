@@ -39,7 +39,11 @@ DataLogger::DataLogger(const std::string& path) : file_(path, std::ios::out | st
             // snapshots queued but not yet on disk when this row was queued
             // (grows while the SD card stalls); log_dropped = cumulative rows
             // dropped because the queue was full (kMaxQueued).
-            << "log_queue_depth,log_dropped"
+            << "log_queue_depth,log_dropped,"
+            // Appended 2026-10-02: calibrated magnetometer (uT), 100 Hz,
+            // sample-and-hold like the other IMU columns. 0 with firmware
+            // built with ENABLE_MAG 0.
+            << "imu_left_mx,imu_left_my,imu_left_mz,imu_right_mx,imu_right_my,imu_right_mz"
           << '\n';
 
     file_ << std::fixed << std::setprecision(6);
@@ -180,7 +184,9 @@ void DataLogger::write_row(const SystemSnapshot& s) {
           << s.imu_left.node_status.timeouts << ',' << s.imu_left.node_status.tx_dropped << ','
           << s.imu_right.node_status.gyro_hz << ',' << s.imu_right.node_status.resets << ','
           << s.imu_right.node_status.timeouts << ',' << s.imu_right.node_status.tx_dropped << ','
-          << s.log_queue_depth << ',' << s.log_dropped
+          << s.log_queue_depth << ',' << s.log_dropped << ','
+          << s.imu_left.mx << ',' << s.imu_left.my << ',' << s.imu_left.mz << ','
+          << s.imu_right.mx << ',' << s.imu_right.my << ',' << s.imu_right.mz
           << '\n';
 }
 

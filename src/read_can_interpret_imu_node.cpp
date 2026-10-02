@@ -2,6 +2,12 @@
 
 namespace motorized_shoe {
 
+namespace {
+// Magnetometer frames carry uT x 16 (the BNO085's native Q4; see
+// firmware/teensy_imu_can). The other channels keep their x1000 / x10000.
+constexpr float kMagScale = 16.0f;
+}  // namespace
+
 ReadCanInterpretImuNode::ReadCanInterpretImuNode(const Config& cfg, DataBus& bus)
     : bus_(bus),
       left_ids_(cfg.imu_left_can_ids),
@@ -39,9 +45,9 @@ void ReadCanInterpretImuNode::parse_can_message(uint32_t can_id, const uint8_t* 
         ++left_.msg_count;
         publish_imu("Left", left_);
     } else if (can_id == static_cast<uint32_t>(left_ids_.magnetometer) && len >= 6) {
-        left_.mx = get_int16(data + 0) / 1000.0f;
-        left_.my = get_int16(data + 2) / 1000.0f;
-        left_.mz = get_int16(data + 4) / 1000.0f;
+        left_.mx = get_int16(data + 0) / kMagScale;
+        left_.my = get_int16(data + 2) / kMagScale;
+        left_.mz = get_int16(data + 4) / kMagScale;
     } else if (left_ids_.status != 0 && can_id == static_cast<uint32_t>(left_ids_.status)) {
         parse_status("Left", left_, data, len);
     }
@@ -62,9 +68,9 @@ void ReadCanInterpretImuNode::parse_can_message(uint32_t can_id, const uint8_t* 
         ++right_.msg_count;
         publish_imu("Right", right_);
     } else if (can_id == static_cast<uint32_t>(right_ids_.magnetometer) && len >= 6) {
-        right_.mx = get_int16(data + 0) / 1000.0f;
-        right_.my = get_int16(data + 2) / 1000.0f;
-        right_.mz = get_int16(data + 4) / 1000.0f;
+        right_.mx = get_int16(data + 0) / kMagScale;
+        right_.my = get_int16(data + 2) / kMagScale;
+        right_.mz = get_int16(data + 4) / kMagScale;
     } else if (right_ids_.status != 0 && can_id == static_cast<uint32_t>(right_ids_.status)) {
         parse_status("Right", right_, data, len);
     }
