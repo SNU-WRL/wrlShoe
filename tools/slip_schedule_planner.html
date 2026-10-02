@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Slip Schedule Planner</title>
+<!-- Generates the schedule CSV that build/motorized_shoe_schedule_app runs
+     (--schedule <file> --trial <N>). The app reads arm_in_trial_s,
+     trial_duration_s, foot, type, value (m/s), unit, direction and delay_ms;
+     the sim_* columns are this page's model of delivery and are not used. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Sans+3:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: lab-tool console. Settings rail on the left, results stacked on the right:
+   summary tiles -> session timeline -> balance matrix + gap histogram -> schedule table. */
+:root{
+  --bg:#F3F5F7; --surface:#FFFFFF; --ink:#14181D; --muted:#5A6470; --line:#D6DCE2; --grid:#E8ECF0;
+  --accent:#1F5FB8; --bad:#C0392B; --bad-bg:#FBEAE7; --ok:#1E7F4F; --ok-bg:#E6F4EC;
+  --c1:#2A78D6; --c2:#D55E00; --c3:#009E73; --c4:#B25A9E; --c5:#B98300; --c6:#5E6E7E;
+  --catch:#8A94A0; --blockA:#F7F9FB; --blockB:#EEF2F6;
+  --f-display:"Archivo","Helvetica Neue",Arial,sans-serif;
+  --f-body:"Source Sans 3","Segoe UI",Helvetica,Arial,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0F1216; --surface:#171B21; --ink:#E3E7EC; --muted:#99A3AF; --line:#2B323A; --grid:#21272E;
+    --accent:#6FA3EC; --bad:#FF7B6C; --bad-bg:#3A201D; --ok:#4CC38A; --ok-bg:#16301F;
+    --c1:#5B9BE6; --c2:#F08A4B; --c3:#33C49A; --c4:#D88BC7; --c5:#E0B040; --c6:#9CAAB8;
+    --catch:#6E7883; --blockA:#1A1F26; --blockB:#20262E; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0F1216; --surface:#171B21; --ink:#E3E7EC; --muted:#99A3AF; --line:#2B323A; --grid:#21272E;
+  --accent:#6FA3EC; --bad:#FF7B6C; --bad-bg:#3A201D; --ok:#4CC38A; --ok-bg:#16301F;
+  --c1:#5B9BE6; --c2:#F08A4B; --c3:#33C49A; --c4:#D88BC7; --c5:#E0B040; --c6:#9CAAB8;
+  --catch:#6E7883; --blockA:#1A1F26; --blockB:#20262E; color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.45;padding:0 20px;padding-block:22px 40px}
+img{max-width:100%}
+.wrap{max-width:1320px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+header h1{font-family:var(--f-display);font-weight:700;font-size:26px;letter-spacing:-.01em;margin:0;text-wrap:balance}
+header p{margin:4px 0 0;color:var(--muted);max-width:75ch}
+.layout{display:grid;grid-template-columns:300px minmax(0,1fr);gap:18px;align-items:start}
+@media (max-width:920px){.layout{grid-template-columns:minmax(0,1fr)}}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px}
+.rail{display:flex;flex-direction:column;gap:14px;position:sticky;top:12px}
+@media (max-width:920px){.rail{position:static}}
+.rail h2,.sec h2{font-family:var(--f-display);font-weight:600;font-size:15px;margin:0}
+.eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:12.5px;color:var(--muted);font-weight:600}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+input[type=text],input[type=number],select,textarea{font:inherit;font-size:14px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;width:100%;min-width:0}
+input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg input{position:absolute;opacity:0;pointer-events:none}
+.seg label{padding:7px 8px;text-align:center;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;background:var(--bg)}
+.seg input:checked+label{background:var(--accent);color:var(--surface)}
+.seg input:focus-visible+label{outline:2px solid var(--accent);outline-offset:-2px}
+textarea.conds{font-family:var(--f-mono);font-size:12.5px;line-height:1.5;resize:vertical;min-height:150px}
+[data-mode=conditions] .factorial-only,[data-mode=factorial] .conditions-only{display:none}
+.check{display:flex;gap:8px;align-items:flex-start;font-size:13.5px}
+.check input{margin-top:3px}
+button{font:inherit;font-size:13.5px;font-weight:600;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:7px 12px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--surface)}
+button:hover{filter:brightness(1.05)}
+.btns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.hint{font-size:12px;color:var(--muted)}
+.main{display:flex;flex-direction:column;gap:18px;min-width:0}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.tile .v{font-family:var(--f-mono);font-size:22px;font-weight:500;font-variant-numeric:tabular-nums}
+.tile .k{font-size:12.5px;color:var(--muted)}
+.tile.bad{border-color:var(--bad);background:var(--bad-bg)}
+.tile.bad .v{color:var(--bad)}
+.tile.good .v{color:var(--ok)}
+.sec{display:flex;flex-direction:column;gap:10px;min-width:0}
+.sec-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--muted);align-items:center}
+.legend .it{display:flex;align-items:center;gap:6px}
+.scroll{overflow-x:auto;min-width:0}
+.trial{display:flex;flex-direction:column;gap:4px;padding-block:6px}
+.trial + .trial{border-top:1px solid var(--grid)}
+.trial-h{font-size:13px;color:var(--muted)}
+.trial-h b{color:var(--ink);font-family:var(--f-display);font-weight:600}
+svg text{font-family:var(--f-mono);fill:var(--muted)}
+.t0{fill:var(--c1)}.t1{fill:var(--c2)}.t2{fill:var(--c3)}.t3{fill:var(--c4)}.t4{fill:var(--c5)}.t5{fill:var(--c6)}
+.s0{background:var(--c1)}.s1{background:var(--c2)}.s2{background:var(--c3)}.s3{background:var(--c4)}.s4{background:var(--c5)}.s5{background:var(--c6)}
+.two{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:18px}
+@media (max-width:1100px){.two{grid-template-columns:minmax(0,1fr)}}
+table{border-collapse:collapse;font-size:13px;width:100%}
+th,td{padding:5px 8px;text-align:right;white-space:nowrap}
+th{font-weight:600;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line)}
+td{font-family:var(--f-mono);font-variant-numeric:tabular-nums;font-size:12.5px;border-bottom:1px solid var(--grid)}
+th:first-child,td:first-child{text-align:left}
+td.lbl{font-family:var(--f-body);font-size:13px}
+tr.viol td{background:var(--bad-bg)}
+tr.viol td.gap{color:var(--bad);font-weight:600}
+.pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11.5px;font-family:var(--f-body);font-weight:600}
+.pill.catch{background:var(--grid);color:var(--muted)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:0}
+.notes{font-size:13.5px;color:var(--muted);display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px 22px}
+.notes h3{font-family:var(--f-display);font-size:13.5px;color:var(--ink);margin:0 0 4px}
+.notes ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:3px}
+.notes code{font-family:var(--f-mono);font-size:12.5px}
+.warn{font-size:13px;color:var(--bad)}
+.tablewrap{max-height:520px;overflow:auto}
+.tablewrap thead th{position:sticky;top:0;background:var(--surface)}
+@media (prefers-reduced-motion:no-preference){.tile,.panel{transition:border-color .2s,background .2s}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">wrlShoe · slip experiment protocol</div>
+    <h1>Slip Schedule Planner</h1>
+    <p>Generates a randomized slip schedule from the collaborator's scheduler rules and draws it: which slip happens in which 60&nbsp;s block, when, and whether the minimum gap between slips holds. Switch between the original code and the corrected version to compare. <b>Download CSV</b> gives the file that <code>motorized_shoe_schedule_app</code> runs.</p>
+  </header>
+
+  <div class="layout">
+    <aside class="rail">
+      <div class="panel" style="display:flex;flex-direction:column;gap:12px">
+        <h2>Design</h2>
+        <div class="field">
+          <label for="preset">Preset</label>
+          <select id="preset">
+            <option value="collab">Collaborator: treadmill, 60 slips</option>
+            <option value="wrl">wrlShoe draft: Early/Mid/Late × 3 peak velocities</option>
+            <option value="timing">wrlShoe timing study: 10 timings × Mid, + Low/High at HS+150</option>
+            <option value="custom">Custom</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="mode">Design</label>
+          <select id="mode">
+            <option value="factorial">Factorial: feet × types × magnitudes</option>
+            <option value="conditions">Condition list</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Scheduler</label>
+          <div class="seg" role="radiogroup" aria-label="Scheduler version">
+            <input type="radio" name="algo" id="algo-orig" value="original" checked><label for="algo-orig">Original code</label>
+            <input type="radio" name="algo" id="algo-fix" value="fixed"><label for="algo-fix">With fixes</label>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field"><label for="seed">Random seed</label><input type="number" id="seed" value="2026"></div>
+          <div class="field" style="justify-content:flex-end"><button class="primary" id="reroll">Re-randomize</button></div>
+        </div>
+      </div>
+
+      <div class="panel" style="display:flex;flex-direction:column;gap:12px">
+        <h2>Factors</h2>
+        <div class="field"><label for="feet">Feet</label><input type="text" id="feet"></div>
+        <div class="field factorial-only"><label for="types">Slip types / timings</label><input type="text" id="types"></div>
+        <div class="field conditions-only"><label for="conds">Conditions, one per line: count, trigger+delay (HS / FF / HO, ms), direction (anterior / posterior), magnitude label</label>
+          <textarea id="conds" class="conds" spellcheck="false"></textarea>
+          <span class="hint">Feet: one foot gets every slip; two feet split each condition between them as evenly as possible, with equal totals per foot.</span></div>
+        <div class="field"><label for="mags">Magnitudes, e.g. "Low 0.6" or a range "Low 0.5-0.7"</label><input type="text" id="mags"></div>
+        <div class="row2">
+          <div class="field"><label for="unit">Magnitude unit</label><input type="text" id="unit"></div>
+          <div class="field"><label for="magmode">Magnitude value</label>
+            <select id="magmode"><option value="session">Per session</option><option value="perslip">Per slip</option></select></div>
+        </div>
+        <div class="hint" id="combo-hint"></div>
+      </div>
+
+      <div class="panel" style="display:flex;flex-direction:column;gap:12px">
+        <h2>Session</h2>
+        <div class="row2">
+          <div class="field"><label for="total">Total slips</label><input type="number" id="total" min="2" step="2"><span class="hint conditions-only">= sum of the counts</span></div>
+          <div class="field"><label for="pertrial">Slips per trial</label><input type="text" id="pertrial"></div>
+        </div>
+        <div class="row2">
+          <div class="field"><label for="blocklen">Block length (s)</label><input type="number" id="blocklen" min="20"></div>
+          <div class="field"><label for="mingap">Min gap (s)</label><input type="number" id="mingap" min="0"></div>
+        </div>
+        <div class="row2">
+          <div class="field"><label for="firstmax">1st slip latest (s)</label><input type="number" id="firstmax" min="0"></div>
+          <div class="field"><label for="catch">Catch blocks per slip block</label><input type="number" id="catch" step="0.05" min="0"></div>
+        </div>
+        <label class="check"><input type="checkbox" id="jitter" checked><span>Model delivery delay after arming (wait for the target gait event, up to one stride)</span></label>
+        <div class="field"><label for="stride">Stride time (s)</label><input type="number" id="stride" step="0.05" min="0.5"></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="tiles" id="tiles"></div>
+
+      <section class="panel sec">
+        <div class="sec-head">
+          <h2>Session timeline</h2>
+          <div class="legend" id="legend"></div>
+        </div>
+        <div id="timeline"></div>
+      </section>
+
+      <div class="two">
+        <section class="panel sec">
+          <div class="sec-head"><h2>Balance by trial</h2><span class="hint">slips of each combination in each trial</span></div>
+          <div class="scroll" id="balance"></div>
+        </section>
+        <section class="panel sec">
+          <div class="sec-head"><h2>Gap between consecutive slips</h2><span class="hint">delivered onset to delivered onset, within a trial</span></div>
+          <div id="hist"></div>
+        </section>
+      </div>
+
+      <section class="panel sec">
+        <div class="sec-head">
+          <h2>Schedule</h2>
+          <div class="btns"><button class="primary" id="download">Download CSV</button><button id="copy">Copy as CSV</button><span class="hint" id="copy-msg" aria-live="polite"></span></div>
+        </div>
+        <div class="tablewrap" id="table"></div>
+        <textarea id="csvfallback" hidden style="width:100%;height:120px;font-family:var(--f-mono);font-size:12px"></textarea>
+      </section>
+
+      <section class="panel notes">
+        <div>
+          <h3>What "With fixes" changes</h3>
+          <ul>
+            <li>The minimum gap is enforced after slip and catch blocks are shuffled, in the order they will run. The original checks it before the shuffle, and only when the previous slip was at 55 s or later.</li>
+            <li>It is measured between delivered onsets. The second slip in a block is armed no earlier than one minimum gap after the first slip is delivered.</li>
+            <li>Combinations are drawn in rounds, each containing every combination once, so every trial gets a near-equal share. The original balances only over the whole session.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>The CSV and the shoe app</h3>
+          <ul>
+            <li>The app arms each slip at <code>arm_in_trial_s</code>, waits for the gait event and fires; it enforces the minimum gap again between the onsets that really happen, and retries a slip that could not be delivered.</li>
+            <li><code>sim_onset_in_trial_s</code> and <code>sim_gap_s</code> are this page's delivery model, for checking the design only.</li>
+            <li>Blank <code>direction</code> / <code>delay_ms</code> use the YAML default for the slip type. Condition lists fill both in: anterior (+velocity) or posterior (−velocity), and ms after the gait event.</li>
+            <li>Type names the app accepts: Early/ES/HS, Mid/MS/FF, Late/LS/HO. The magnitude must be a peak speed in m/s.</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Not shown here</h3>
+          <ul>
+            <li>Timing inside the stride (ES preparation time, LS at 40% of stride). The original drops the ES preparation time when it rolls forward a stride; that bug is too small to see at this scale.</li>
+            <li>Overground walking. Blocks here are continuous treadmill time; an overground version needs passes, turns and excluded acceleration steps.</li>
+            <li>Delivery delay is drawn uniformly from 0 to one stride as a stand-in for waiting for the target gait event.</li>
+          </ul>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script>
+(() => {
+const $ = s => document.querySelector(s);
+const PRESETS = {
+  collab: {mode:"factorial", conds:"", feet:"L, R", types:"ES, LS", mags:"Low 3-10, Medium 11-31, High 32-40", unit:"cm", magmode:"session",
+           total:60, pertrial:"20, 20, 20", blocklen:60, mingap:10, firstmax:45, catch:0.333, stride:1.3, algo:"original"},
+  wrl:    {mode:"factorial", conds:"", feet:"R", types:"Early, Mid, Late", mags:"Low 0.6, Medium 0.8, High 1.0", unit:"m/s peak", magmode:"session",
+           total:54, pertrial:"18, 18, 18", blocklen:60, mingap:10, firstmax:45, catch:0.333, stride:1.4, algo:"fixed"},
+  // 2026-10-02 design: 10 stance timings x 5 at Mid; anterior up to FF+300, posterior from FF+450;
+  // plus 5 Low and 5 High at HS+150. Both feet, each condition split between them.
+  timing: {mode:"conditions", feet:"L, R", types:"", mags:"Low 0.6, Mid 0.8, High 1.0", unit:"m/s peak", magmode:"session",
+           conds:["5 HS+0 anterior Mid","5 HS+75 anterior Mid","5 HS+150 anterior Mid","5 FF+0 anterior Mid",
+                  "5 FF+150 anterior Mid","5 FF+300 anterior Mid","5 FF+450 posterior Mid","5 FF+600 posterior Mid",
+                  "5 HO+0 posterior Mid","5 HO+75 posterior Mid","5 HS+150 anterior Low","5 HS+150 anterior High"].join("\n"),
+           total:60, pertrial:"20, 20, 20", blocklen:60, mingap:10, firstmax:45, catch:0.333, stride:1.4, algo:"fixed"}
+};
+const FIELDS = ["mode","conds","feet","types","mags","unit","magmode","total","pertrial","blocklen","mingap","firstmax","catch","stride"];
+const STORE = "slip-schedule-planner-v1";
+
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function mkRng(seed){const r=mulberry32(seed>>>0);return{
+  f:r, int:(lo,hi)=>lo+Math.floor(r()*(hi-lo+1)),
+  shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}}}
+const list = s => s.split(",").map(x=>x.trim()).filter(Boolean);
+// "Low 3-10" -> range; "Low 0.6" -> single value (lo = hi); "Low" -> label only.
+function parseMags(s){return list(s).map(x=>{
+  let m=x.match(/^(.*?)\s*(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)$/);
+  if(m && m[1].trim()) return {label:m[1].trim(),lo:+m[2],hi:+m[3]};
+  m=x.match(/^(.*?)\s+(\d+(?:\.\d+)?)$/);
+  if(m && m[1].trim()) return {label:m[1].trim(),lo:+m[2],hi:+m[2]};
+  return {label:x,lo:null,hi:null}})}
+const fmtT = s => {const m=Math.floor(s/60), r=s-m*60; return `${m}:${r.toFixed(1).padStart(4,"0")}`};
+
+function readCfg(){
+  const g=id=>$("#"+id).value;
+  return {mode:g("mode")||"factorial", conds:g("conds"), feet:list(g("feet")), types:list(g("types")).slice(0,6), mags:parseMags(g("mags")), unit:g("unit").trim(),
+    magmode:g("magmode"), total:Math.max(0,parseInt(g("total"))||0), pertrial:list(g("pertrial")).map(x=>parseInt(x)||0),
+    L:Math.max(20,+g("blocklen")||60), gap:Math.max(0,+g("mingap")||0), fmax:Math.max(0,+g("firstmax")||0),
+    catchR:Math.max(0,+g("catch")||0), stride:Math.max(0.3,+g("stride")||1.3), jitter:$("#jitter").checked,
+    algo:document.querySelector("input[name=algo]:checked").value, seed:parseInt(g("seed"))||0};
+}
+
+// Condition list: "5 HS+150 anterior Mid" -> {count, trig, delay, dir, mi}.
+const TRIGS=["HS","FF","HO"];
+function parseConds(text,mags,warns){
+  const out=[];
+  text.split(/\n/).map(x=>x.trim()).filter(x=>x&&!x.startsWith("#")).forEach(line=>{
+    const m=line.match(/^(\d+)\s*[x×]?\s+(HS|FF|HO)\s*\+\s*(\d+)\s*(?:ms)?\s+(anterior|posterior)\s+(.+)$/i);
+    if(!m){warns.push(`Condition not understood: "${line}" (e.g. "5 HS+150 anterior Mid").`);return}
+    const mi=mags.findIndex(g=>g.label.toLowerCase()===m[5].trim().toLowerCase());
+    if(mi<0){warns.push(`Condition "${line}": no magnitude labelled "${m[5].trim()}".`);return}
+    const trig=m[2].toUpperCase(), delay=+m[3], dir=m[4].toLowerCase();
+    out.push({count:+m[1],trig,delay,dir,mi,label:`${trig}+${delay} ${dir}`});
+  });
+  return out;
+}
+
+function generate(c){
+  const rng=mkRng(c.seed), warns=[];
+  let combos=[], total, pool=[];
+  if(c.mode==="conditions"){
+    // Each condition is its own "type" for drawing; colours follow the trigger.
+    const conds=parseConds(c.conds,c.mags,warns);
+    c.conds=conds; c.types=conds.map(k=>k.label); c.tcol=conds.map(k=>TRIGS.indexOf(k.trig));
+    total=conds.reduce((a,k)=>a+k.count,0);
+    if(!conds.length||!c.feet.length) return {trials:[],warns:warns.concat(["Add at least one foot and one condition."]),combos,total:0};
+    if(c.feet.length>2) warns.push("Condition lists use at most two feet; only the first two are used.");
+    const nf=Math.min(2,c.feet.length);
+    // Foot sequence per condition: alternate feet; with two feet an odd count gives
+    // one foot an extra slip, and the extras alternate so the foot totals match.
+    const odd=rng.shuffle(conds.map((_,i)=>i).filter(i=>conds[i].count%2));
+    const first=conds.map(()=>0); odd.forEach((ci,k)=>first[ci]=k%2);
+    const evenStart=rng.shuffle(conds.map((_,i)=>i).filter(i=>!(conds[i].count%2)));
+    evenStart.forEach((ci,k)=>first[ci]=k%2);
+    const footOf=(ci,r)=>nf===1?0:(first[ci]+r)%2;
+    const inst=[];   // [condition, repetition]
+    if(c.algo==="original"){
+      conds.forEach((k,ci)=>{for(let r=0;r<k.count;r++)inst.push([ci,r])});
+      rng.shuffle(inst);
+    } else {
+      // Rounds: every condition once per round, so each trial gets a near-equal share.
+      const maxc=Math.max(...conds.map(k=>k.count));
+      for(let r=0;r<maxc;r++) inst.push(...rng.shuffle(conds.map((k,ci)=>[ci,r]).filter(([ci])=>conds[ci].count>r)));
+      inst.reverse();
+    }
+    pool=inst.map(([ci,r])=>({fi:footOf(ci,r),ti:ci,mi:conds[ci].mi}));
+    const seen=new Set();
+    pool.forEach(p=>{const k=`${p.fi}|${p.ti}|${p.mi}`; if(!seen.has(k)){seen.add(k);combos.push({fi:p.fi,ti:p.ti,mi:p.mi})}});
+    combos.sort((a,b)=>a.ti-b.ti||a.fi-b.fi);
+    if(total%2){warns.push("Total slips must be even (two per block); one slip is left out.");}
+    if(+c.total!==total) warns.push(`Total slips set to ${total}, the sum of the condition counts.`);
+  } else {
+  c.tcol=c.types.map((_,i)=>i);
+  if(list($("#types").value).length>6) warns.push("Only the first 6 slip types are used (6 colours).");
+  c.feet.forEach((f,fi)=>c.types.forEach((t,ti)=>c.mags.forEach((m,mi)=>combos.push({fi,ti,mi}))));
+  total=c.total; if(total%2){total--; warns.push("Total slips must be even; reduced by 1.");}
+  if(!combos.length) return {trials:[],warns:["Add at least one foot, one type and one magnitude."],combos,total:0};
+  const base=Math.floor(total/combos.length), rem=total%combos.length;
+  if(c.algo==="original"){
+    combos.forEach(cb=>{for(let k=0;k<base;k++)pool.push(cb)});
+    if(rem) rng.shuffle(combos.map((_,i)=>i)).slice(0,rem).forEach(i=>pool.push(combos[i]));
+    rng.shuffle(pool);
+  } else {
+    for(let r=0;r<base;r++) pool.push(...rng.shuffle(combos.slice()));
+    if(rem) pool.push(...rng.shuffle(combos.slice()).slice(0,rem));
+    pool.reverse();
+  }
+  if(rem) warns.push(`${total} slips do not divide evenly into ${combos.length} combinations; ${rem} combination(s) get one extra.`);
+  }
+  // A single value (lo === hi) is returned without drawing, so it does not use up random numbers.
+  const draw=m=>{if(m.lo==null)return null; if(m.lo===m.hi) return m.lo;
+    const dec=Math.max(...[m.lo,m.hi].map(v=>(String(v).split(".")[1]||"").length));
+    if(!dec) return rng.int(m.lo,m.hi); const f=10**dec; return rng.int(Math.round(m.lo*f),Math.round(m.hi*f))/f;};
+  const sessVal=c.types.map(()=>c.mags.map(draw));
+  const valFor=(ti,mi)=>c.magmode==="session"?sessVal[ti][mi]:draw(c.mags[mi]);
+  const delay=()=>c.jitter?rng.f()*c.stride:0;
+  const rround=x=>{const lo=Math.floor(x);return rng.f()<x-lo?lo+1:lo};
+  const {L,gap,fmax}=c; const fm=Math.min(fmax,L-1);
+  const trials=[];
+  for(let req of c.pertrial){
+    let n=Math.min(req,pool.length); if(n%2) n--; if(n<=0) break;
+    const sb=n/2, nc=Math.max(0,rround(sb*c.catchR)); let blocks=[];
+    if(c.algo==="original"){
+      let prev=-1;
+      for(let b=0;b<sb;b++){
+        const f=rng.int(prev>=L-5?Math.min(gap,fm):0,fm), s=rng.int(Math.min(f+gap,L-1),L-1);
+        blocks.push({kind:"slip",slips:[{off:f,plan:pool.pop()},{off:s,plan:pool.pop()}]}); prev=s;
+      }
+      for(let k=0;k<nc;k++) blocks.push({kind:"catch",slips:[]});
+      rng.shuffle(blocks);
+      let done=-Infinity;
+      blocks.forEach((blk,i)=>{blk.start=i*L; blk.slips.forEach(sl=>{sl.arm=Math.max(blk.start+sl.off,done); sl.onset=sl.arm+delay(); done=sl.onset+0.6;})});
+    } else {
+      const kinds=rng.shuffle([...Array(sb).fill("slip"),...Array(nc).fill("catch")]);
+      let last=-Infinity;
+      kinds.forEach((k,i)=>{const start=i*L, blk={kind:k,start,slips:[]};
+        if(k==="slip"){
+          const lo=Math.max(0,Math.ceil(last+gap-start)), f=lo>fm?lo:rng.int(lo,fm);
+          const sp=rng.int(Math.min(f+gap,L-1),L-1);
+          const a1=start+f, o1=a1+delay(), a2=Math.max(start+sp,o1+gap), o2=a2+delay();
+          blk.slips=[{off:f,arm:a1,onset:o1,plan:pool.pop()},{off:a2-start,arm:a2,onset:o2,plan:pool.pop()}]; last=o2;
+        }
+        blocks.push(blk)});
+    }
+    trials.push({n,blocks});
+  }
+  const unused=pool.length; if(unused) warns.push(`${unused} slip(s) not assigned to any trial. Add a trial or raise slips per trial.`);
+  let idx=0; const all=[];
+  trials.forEach((tr,ti)=>{let prev=null;
+    tr.blocks.forEach((blk,bi)=>{blk.index=bi; blk.slips.forEach(sl=>{
+      sl.n=++idx; sl.trial=ti; sl.block=bi; sl.val=valFor(sl.plan.ti,sl.plan.mi);
+      sl.gap=prev?sl.onset-prev.onset:null; sl.viol=sl.gap!=null&&sl.gap<gap-1e-9; prev=sl; all.push(sl);})})});
+  return {trials,all,combos,total,warns,cfg:c};
+}
+
+const NS="http://www.w3.org/2000/svg";
+const el=(tag,attrs={},parent)=>{const e=document.createElementNS(NS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e};
+const esc=s=>String(s).replace(/[&<>"]/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
+
+const magText=(c,m,val)=>val!=null?`${m.label} · ${val} ${c.unit}`:(/\d/.test(m.label)&&c.unit?`${m.label} ${c.unit}`:m.label);
+function label(r,sl){const c=r.cfg;
+  return `${c.feet[sl.plan.fi]} · ${c.types[sl.plan.ti]} · ${magText(c,c.mags[sl.plan.mi],sl.val)}`}
+
+function renderTiles(r){
+  const c=r.cfg, gaps=r.all.filter(s=>s.gap!=null).map(s=>s.gap), nv=r.all.filter(s=>s.viol).length;
+  const mg=gaps.length?Math.min(...gaps):null;
+  const nBlocks=r.trials.reduce((a,t)=>a+t.blocks.length,0), nCatch=r.trials.reduce((a,t)=>a+t.blocks.filter(b=>b.kind==="catch").length,0);
+  const mins=r.trials.map(t=>(t.blocks.length*c.L/60).toFixed(0));
+  const tiles=[
+    [r.all.length+" / "+r.total,"slips scheduled",""],
+    [r.trials.length,"trials, "+(mins.join(" / ")||"–")+" min",""],
+    [nBlocks+"",`blocks of ${c.L} s, ${nCatch} catch`,""],
+    [mg==null?"–":mg.toFixed(1)+" s","shortest gap between slips",mg!=null&&mg<c.gap?"bad":"good"],
+    [nv+"",`gaps under ${c.gap} s`,nv?"bad":"good"],
+    [r.combos.length+"",`combinations, ≈${r.combos.length?(r.total/r.combos.length).toFixed(1):0} each`,""]
+  ];
+  $("#tiles").innerHTML=tiles.map(([v,k,cls])=>`<div class="tile ${cls}"><span class="v">${esc(v)}</span><span class="k">${esc(k)}</span></div>`).join("");
+}
+
+function renderLegend(r){
+  const c=r.cfg;
+  const types=(c.mode==="conditions"?TRIGS.filter((t,i)=>c.tcol.includes(i)).map(t=>[`${t} trigger`,TRIGS.indexOf(t)]):c.types.map((t,i)=>[t,i]))
+    .map(([t,i])=>`<span class="it"><span class="dot s${i}"></span>${esc(t)}</span>`).join("");
+  const mags=c.mags.map((m,i)=>`<span class="it"><svg width="${(4+i*1.8)*2+2}" height="16" aria-hidden="true"><circle cx="${4+i*1.8+1}" cy="8" r="${4+i*1.8}" fill="none" stroke="currentColor"/></svg>${esc(m.label)}</span>`).join("");
+  const feet=c.feet.length>1?`<span class="it">${esc(c.feet[0])} above the line, ${esc(c.feet[1])} below</span>`:"";
+  $("#legend").innerHTML=types+mags+feet+`<span class="it"><svg width="22" height="12" aria-hidden="true"><rect width="22" height="12" fill="url(#hatchL)"/></svg>catch (normal walking)</span><span class="it" style="color:var(--bad)">▬ gap under ${c.gap} s</span>`;
+}
+
+function renderTimeline(r){
+  const c=r.cfg, box=$("#timeline"); box.innerHTML="";
+  // shared hatch pattern for the legend
+  const defsSvg=el("svg",{width:0,height:0,style:"position:absolute"},box);
+  const pd=el("pattern",{id:"hatchL",width:6,height:6,patternUnits:"userSpaceOnUse",patternTransform:"rotate(45)"},el("defs",{},defsSvg));
+  el("line",{x1:0,y1:0,x2:0,y2:6,style:"stroke:var(--catch);stroke-width:1.4"},pd);
+  const pxs=1.35, padL=10, padR=14, H=92, mid=40;
+  r.trials.forEach((tr,ti)=>{
+    const wrap=document.createElement("div"); wrap.className="trial";
+    const nC=tr.blocks.filter(b=>b.kind==="catch").length;
+    wrap.innerHTML=`<div class="trial-h"><b>Trial ${ti+1}</b> · ${tr.n} slips · ${tr.blocks.length} blocks (${nC} catch) · ${(tr.blocks.length*c.L/60).toFixed(0)} min</div>`;
+    const sc=document.createElement("div"); sc.className="scroll"; wrap.appendChild(sc);
+    const W=padL+tr.blocks.length*c.L*pxs+padR;
+    const svg=el("svg",{width:W,height:H,viewBox:`0 0 ${W} ${H}`,role:"img","aria-label":`Trial ${ti+1} timeline`},sc);
+    const X=t=>padL+t*pxs;
+    tr.blocks.forEach((blk,bi)=>{
+      const x=X(blk.start), w=c.L*pxs;
+      el("rect",{x,y:mid-26,width:w,height:52,style:`fill:var(${bi%2?"--blockB":"--blockA"})`},svg);
+      if(blk.kind==="catch"){el("rect",{x,y:mid-26,width:w,height:52,fill:"url(#hatchL)",opacity:.55},svg);
+        const tx=el("text",{x:x+w/2,y:mid+4,"text-anchor":"middle","font-size":10},svg); tx.textContent="catch";}
+      el("line",{x1:x,y1:mid-26,x2:x,y2:mid+30,style:"stroke:var(--line)"},svg);
+      const lb=el("text",{x:x+3,y:mid+42,"font-size":9.5},svg); lb.textContent=`${Math.round(blk.start/60)}′`;
+    });
+    el("line",{x1:X(tr.blocks.length*c.L),y1:mid-26,x2:X(tr.blocks.length*c.L),y2:mid+30,style:"stroke:var(--line)"},svg);
+    el("line",{x1:padL,y1:mid,x2:X(tr.blocks.length*c.L),y2:mid,style:"stroke:var(--line)"},svg);
+    let prev=null;
+    tr.blocks.forEach(blk=>blk.slips.forEach(sl=>{
+      const two=c.feet.length>1, cy=two?(sl.plan.fi===0?mid-12:mid+12):mid, cx=X(sl.onset), rad=4+sl.plan.mi*1.8;
+      if(sl.viol&&prev){const y=mid-24; el("path",{d:`M${X(prev.onset)} ${y+5} V${y} H${cx} V${y+5}`,fill:"none",style:"stroke:var(--bad);stroke-width:2"},svg);}
+      const g=el("g",{},svg);
+      el("line",{x1:X(sl.arm),y1:cy,x2:cx,y2:cy,style:"stroke:var(--muted);stroke-width:1",opacity:.6},g);
+      el("circle",{cx,cy,r:rad,class:"t"+c.tcol[sl.plan.ti],style:sl.viol?"stroke:var(--bad);stroke-width:2.2":"stroke:var(--surface);stroke-width:1.2"},g);
+      const tt=el("title",{},g); tt.textContent=`#${sl.n} · ${label(r,sl)}\nonset ${fmtT(sl.onset)} (armed ${fmtT(sl.arm)})${sl.gap!=null?`\ngap ${sl.gap.toFixed(1)} s`:""}`;
+      prev=sl;}));
+    box.appendChild(wrap);
+  });
+  if(!r.trials.length) box.innerHTML+=`<p class="hint">No trials. Check total slips and slips per trial.</p>`;
+}
+
+function renderBalance(r){
+  const c=r.cfg, nT=r.trials.length;
+  const counts=r.combos.map(()=>Array(nT).fill(0));
+  const key=p=>r.combos.findIndex(cb=>cb.fi===p.fi&&cb.ti===p.ti&&cb.mi===p.mi);
+  r.all.forEach(sl=>counts[key(sl.plan)][sl.trial]++);
+  const max=Math.max(1,...counts.flat());
+  let h=`<table><thead><tr><th>Combination</th>${r.trials.map((t,i)=>`<th>T${i+1}</th>`).join("")}<th>Total</th></tr></thead><tbody>`;
+  r.combos.forEach((cb,i)=>{
+    const tot=counts[i].reduce((a,b)=>a+b,0);
+    h+=`<tr><td class="lbl"><span class="dot s${c.tcol[cb.ti]}"></span>${esc(c.feet[cb.fi])} · ${esc(c.types[cb.ti])} · ${esc(c.mags[cb.mi].label)}</td>`+
+      counts[i].map(v=>`<td style="background:color-mix(in srgb, var(--accent) ${Math.round(v/max*55)}%, transparent)">${v}</td>`).join("")+`<td>${tot}</td></tr>`;
+  });
+  const exp=r.trials.map(t=>(t.n/Math.max(1,r.combos.length)).toFixed(1));
+  h+=`</tbody><tfoot><tr><td class="lbl" style="color:var(--muted)">Even share</td>${exp.map(v=>`<td style="color:var(--muted)">${v}</td>`).join("")}<td></td></tr></tfoot></table>`;
+  $("#balance").innerHTML=h;
+}
+
+function renderHist(r){
+  const c=r.cfg, gaps=r.all.filter(s=>s.gap!=null).map(s=>s.gap), box=$("#hist"); box.innerHTML="";
+  if(!gaps.length){box.innerHTML=`<p class="hint">No gaps to show.</p>`;return}
+  const bw=2, maxG=Math.max(c.gap*2,Math.ceil(Math.max(...gaps)/bw)*bw), nb=Math.ceil(maxG/bw);
+  const bins=Array(nb).fill(0); gaps.forEach(g=>bins[Math.min(nb-1,Math.floor(g/bw))]++);
+  const W=520,H=230,ml=34,mr=10,mt=16,mb=34, pw=W-ml-mr, ph=H-mt-mb, ymax=Math.max(...bins);
+  const svg=el("svg",{viewBox:`0 0 ${W} ${H}`,width:"100%",role:"img","aria-label":"Histogram of gaps between slips"},box);
+  const X=v=>ml+v/maxG*pw, Y=v=>mt+ph-v/ymax*ph;
+  const step=Math.max(1,Math.ceil(ymax/4));
+  for(let v=0;v<=ymax;v+=step){el("line",{x1:ml,x2:W-mr,y1:Y(v),y2:Y(v),style:"stroke:var(--grid)"},svg);
+    const t=el("text",{x:ml-6,y:Y(v)+3.5,"text-anchor":"end","font-size":10},svg);t.textContent=v;}
+  bins.forEach((v,i)=>{if(!v)return; const x0=X(i*bw), x1=X((i+1)*bw);
+    const under=i*bw<c.gap;
+    el("rect",{x:x0+1,y:Y(v),width:Math.max(1,x1-x0-2),height:mt+ph-Y(v),rx:2,style:`fill:var(${under?"--bad":"--accent"})`},svg);});
+  el("line",{x1:X(c.gap),x2:X(c.gap),y1:mt-4,y2:mt+ph,style:"stroke:var(--bad);stroke-dasharray:4 3;stroke-width:1.4"},svg);
+  const lt=el("text",{x:X(c.gap)+5,y:mt+6,"font-size":10.5,style:"fill:var(--bad)"},svg); lt.textContent=`min gap ${c.gap} s`;
+  el("line",{x1:ml,x2:W-mr,y1:mt+ph,y2:mt+ph,style:"stroke:var(--line)"},svg);
+  const xs=maxG<=60?10:20;
+  for(let v=0;v<=maxG;v+=xs){const t=el("text",{x:X(v),y:mt+ph+15,"text-anchor":"middle","font-size":10},svg);t.textContent=v;}
+  const xl=el("text",{x:ml+pw/2,y:H-4,"text-anchor":"middle","font-size":10.5},svg); xl.textContent="seconds between consecutive slips (2 s bins)";
+}
+
+// Schedule file for motorized_shoe_schedule_app. The '#' line records how it
+// was made; the app copies it into the run's records.
+function csv(r){const c=r.cfg;
+  const head=`# wrlShoe slip schedule | planner v2 | seed ${c.seed} | scheduler ${c.algo} | feet ${c.feet.join(" ")} | `+
+    (c.mode==="conditions"?`conditions ${c.conds.map(k=>`${k.count}x ${k.label} ${c.mags[k.mi].label}`).join("; ")}`:`types ${c.types.join(" ")}`)+` | magnitudes ${c.mags.map(m=>m.lo==null?m.label:m.lo===m.hi?`${m.label} ${m.lo}`:`${m.label} ${m.lo}-${m.hi}`).join(" / ")} ${c.unit} (${c.magmode}) | `+
+    `block ${c.L} s | min gap ${c.gap} s | first slip by ${c.fmax} s | catch ratio ${c.catchR} | `+
+    `delay model ${c.jitter?`on, stride ${c.stride} s`:"off"} | exported ${new Date().toISOString()}`;
+  const rows=[["slip","trial","block","arm_in_trial_s","sim_onset_in_trial_s","foot","type","magnitude","value","unit",
+               "direction","delay_ms","sim_gap_s","sim_under_min_gap","trial_duration_s"]];
+  r.all.forEach(sl=>{const tr=r.trials[sl.trial];
+    rows.push([sl.n,sl.trial+1,sl.block+1,sl.arm.toFixed(2),sl.onset.toFixed(2),c.feet[sl.plan.fi],
+      c.mode==="conditions"?c.conds[sl.plan.ti].trig:c.types[sl.plan.ti],
+      c.mags[sl.plan.mi].label,sl.val??"",c.unit,
+      ...(c.mode==="conditions"?[c.conds[sl.plan.ti].dir,c.conds[sl.plan.ti].delay]:["",""]),sl.gap==null?"":sl.gap.toFixed(2),sl.viol?1:0,(tr.blocks.length*c.L).toFixed(0)])});
+  return head.replace(/[\r\n,]/g," ")+"\n"+
+    rows.map(r=>r.map(v=>/[,"]/.test(String(v))?`"${String(v).replace(/"/g,'""')}"`:v).join(",")).join("\n")+"\n";}
+
+function renderTable(r){const c=r.cfg;
+  let h=`<table><thead><tr><th>#</th><th>Trial</th><th>Block</th><th>Arm in block (s)</th><th>Sim. onset (s)</th><th>Onset in trial</th><th>Foot</th><th>Type</th><th>Magnitude</th><th>Gap (s)</th></tr></thead><tbody>`;
+  r.trials.forEach((tr,ti)=>tr.blocks.forEach(blk=>{
+    if(blk.kind==="catch"){h+=`<tr><td></td><td>${ti+1}</td><td>${blk.index+1}</td><td colspan="7" class="lbl"><span class="pill catch">catch block · normal walking</span></td></tr>`;return}
+    blk.slips.forEach(sl=>{const m=c.mags[sl.plan.mi];
+      h+=`<tr class="${sl.viol?"viol":""}"><td>${sl.n}</td><td>${ti+1}</td><td>${blk.index+1}</td><td>${(sl.arm-blk.start).toFixed(1)}</td><td>${(sl.onset-blk.start).toFixed(1)}</td><td>${fmtT(sl.onset)}</td>
+      <td class="lbl">${esc(c.feet[sl.plan.fi])}</td><td class="lbl"><span class="dot s${c.tcol[sl.plan.ti]}"></span>${esc(c.types[sl.plan.ti])}</td>
+      <td class="lbl">${esc(magText(c,m,sl.val))}</td><td class="gap">${sl.gap==null?"–":sl.gap.toFixed(1)}</td></tr>`})}));
+  h+="</tbody></table>"; $("#table").innerHTML=h;}
+
+let current=null;
+function run(){
+  document.body.dataset.mode=$("#mode").value||"factorial";
+  const c=readCfg(); const r=generate(c); current=r;
+  if(c.mode==="conditions"){ $("#total").value=r.total; }
+  $("#total").readOnly=c.mode==="conditions";
+  const n=c.mode==="conditions"?r.combos.length:c.feet.length*c.types.length*c.mags.length;
+  $("#combo-hint").innerHTML=(c.mode==="conditions"?`${(c.conds||[]).length} conditions × ${Math.min(2,c.feet.length)} feet → <b>${n}</b> condition-foot cells`
+    :`${c.feet.length} × ${c.types.length} × ${c.mags.length} = <b>${n}</b> combinations`)+(r.warns.length?`<div class="warn">${r.warns.map(esc).join("<br>")}</div>`:"");
+  renderTiles(r); renderLegend(r); renderTimeline(r); renderBalance(r); renderHist(r); renderTable(r);
+  save();
+}
+function applyPreset(k){const p=PRESETS[k]; if(!p)return; FIELDS.forEach(f=>$("#"+f).value=p[f]); document.getElementById(p.algo==="fixed"?"algo-fix":"algo-orig").checked=true;}
+function save(){try{const s={preset:$("#preset").value,seed:$("#seed").value,algo:document.querySelector("input[name=algo]:checked").value,jitter:$("#jitter").checked};
+  FIELDS.forEach(f=>s[f]=$("#"+f).value); localStorage.setItem(STORE,JSON.stringify(s));}catch(e){}}
+function load(){try{const s=JSON.parse(localStorage.getItem(STORE)||"null"); if(!s)return false;
+  $("#preset").value=s.preset||"custom"; $("#seed").value=s.seed; FIELDS.forEach(f=>{if(s[f]!=null)$("#"+f).value=s[f]});
+  document.getElementById(s.algo==="fixed"?"algo-fix":"algo-orig").checked=true; $("#jitter").checked=!!s.jitter; return true;}catch(e){return false}}
+
+if(!load()) applyPreset("collab");
+let t=null; const deb=()=>{clearTimeout(t);t=setTimeout(run,150)};
+$("#preset").addEventListener("change",e=>{applyPreset(e.target.value);run()});
+FIELDS.concat(["seed"]).forEach(f=>$("#"+f).addEventListener("input",()=>{if(f!=="seed"&&f!=="magmode")$("#preset").value="custom";deb()}));
+$("#mode").addEventListener("change",()=>{$("#preset").value="custom";run()});
+document.querySelectorAll("input[name=algo]").forEach(x=>x.addEventListener("change",run));
+$("#jitter").addEventListener("change",run);
+$("#reroll").addEventListener("click",()=>{$("#seed").value=Math.floor(Math.random()*100000);run()});
+$("#copy").addEventListener("click",()=>{if(!current)return; const text=csv(current), msg=$("#copy-msg"), ta=$("#csvfallback");
+  const fallback=()=>{ta.hidden=false;ta.value=text;ta.focus();ta.select();msg.textContent="Copy failed here. The CSV is selected below; press Ctrl/Cmd+C."};
+  try{navigator.clipboard.writeText(text).then(()=>{msg.textContent=`Copied ${current.all.length} slips.`;ta.hidden=true},fallback)}catch(e){fallback()}});
+$("#download").addEventListener("click",()=>{if(!current)return; const c=current.cfg;
+  const blob=new Blob([csv(current)],{type:"text/csv"}), a=document.createElement("a");
+  a.href=URL.createObjectURL(blob); a.download=`slip_schedule_seed${c.seed}_${c.algo}.csv`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  $("#copy-msg").textContent=`Downloaded ${current.all.length} slips.`;});
+run();
+})();
+</script>
+</body>
+</html>

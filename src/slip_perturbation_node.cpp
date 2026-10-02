@@ -26,7 +26,7 @@ SlipPerturbationNode::SlipPerturbationNode(
 
 void SlipPerturbationNode::reset_estimator(const char* reason) {
     if (estimator_had_data_) {
-        std::cerr << "[slip] stance estimator (diagnostic) reset (" << reason << ")\n";
+        std::cerr << "[slip] " << cfg_.foot << " stance estimator (diagnostic) reset (" << reason << ")\n";
     }
     estimator_.reset(reason);
     estimator_had_data_ = false;
@@ -51,7 +51,7 @@ const char* SlipPerturbationNode::trigger_label(Mode mode) const {
     }
 }
 
-int SlipPerturbationNode::trigger_delay_ms(Mode mode) const {
+int SlipPerturbationNode::default_delay_ms(Mode mode) const {
     switch (mode) {
         case Mode::MidStance: return cfg_.mid_stance_delay_ms;
         case Mode::LateStance: return cfg_.late_stance_delay_ms;
@@ -67,20 +67,84 @@ char SlipPerturbationNode::mode_key(Mode mode) const {
     }
 }
 
-int32_t SlipPerturbationNode::slip_velocity_for(Mode mode) const {
-    // AfterHS pushes the foot backward (+), the late-stance slip forward (-);
-    // the mid-stance direction is configurable.
+int32_t SlipPerturbationNode::default_velocity(Mode mode) const {
+    // +velocity moves the foot anterior, -velocity posterior (confirmed
+    // 2026-10-02). AfterHS slips anterior (+), the late-stance slip posterior
+    // (-); the mid-stance direction is configurable ("backward" is the old
+    // word for anterior, "forward" for posterior).
     switch (mode) {
         case Mode::LateStance: return -cfg_.slip_velocity;
         case Mode::MidStance:
-            return (cfg_.mid_stance_slip_direction == "backward") ? cfg_.slip_velocity
-                                                                  : -cfg_.slip_velocity;
+            return (cfg_.mid_stance_slip_direction == "backward" ||
+                    cfg_.mid_stance_slip_direction == "anterior")
+                       ? cfg_.slip_velocity
+                       : -cfg_.slip_velocity;
         default: return cfg_.slip_velocity;
     }
 }
 
 void SlipPerturbationNode::request_slip(Mode mode) {
-    pending_request_.store(static_cast<int>(mode), std::memory_order_release);
+    Request r;
+    r.mode = mode;
+    r.velocity = default_velocity(mode);
+    r.delay_ms = default_delay_ms(mode);
+    r.duration_ms = cfg_.slip_duration_ms;
+    request_slip(r);
+}
+
+void SlipPerturbationNode::request_slip(const Request& request) {
+    std::lock_guard<std::mutex> lock(pending_mutex_);
+    pending_request_ = request;
+}
+
+bool SlipPerturbationNode::cancel(const std::string& reason) {
+    std::optional<Request> dropped;
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        dropped.swap(pending_request_);
+    }
+    if (dropped) {
+        report(Outcome::Kind::Cancelled, reason, 0, false, dropped->id);
+    }
+    if (state_ == State::Slipping) {
+        return false;
+    }
+    if (state_ != State::Idle) {
+        std::cout << "[slip] " << cfg_.foot << " " << mode_name(current_.mode) << " cancelled: " << reason << '\n';
+        std::cout.flush();
+        report(Outcome::Kind::Cancelled, reason);
+        go_idle();
+    }
+    return true;
+}
+
+std::vector<SlipPerturbationNode::Outcome> SlipPerturbationNode::take_outcomes() {
+    std::vector<Outcome> out;
+    out.swap(outcomes_);
+    return out;
+}
+
+void SlipPerturbationNode::report(Outcome::Kind kind, const std::string& detail, int64_t event_ns,
+                                  bool during_slip, int id) {
+    if (id < 0) {
+        id = current_.id;
+    }
+    if (id <= 0) {
+        return;  // keyboard request: nobody collects outcomes
+    }
+    Outcome o;
+    o.id = id;
+    o.kind = kind;
+    o.time_ns = now_ns();
+    o.event_ns = event_ns;
+    o.during_slip = during_slip;
+    o.detail = detail;
+    outcomes_.push_back(std::move(o));
+}
+
+void SlipPerturbationNode::go_idle() {
+    state_ = State::Idle;
+    current_ = Request{};
 }
 
 bool SlipPerturbationNode::is_active() const {
@@ -92,15 +156,23 @@ void SlipPerturbationNode::tick() {
         return;
     }
 
+    std::optional<Request> req;
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        req.swap(pending_request_);
+    }
+
     // Emergency stop trumps everything. Drop any pending request, force the
     // state machine back to Idle, and let the command node hold the motors at 0.
     if (cmd_node_.is_emergency_stopped()) {
-        pending_request_.store(0, std::memory_order_release);
+        if (req) {
+            report(Outcome::Kind::Refused, "emergency stop", 0, false, req->id);
+        }
         reset_estimator("emergency stop");
         if (state_ != State::Idle) {
-            std::cerr << "[slip] aborted: emergency stop active\n";
-            state_ = State::Idle;
-            current_mode_ = Mode::None;
+            std::cerr << "[slip] " << cfg_.foot << " aborted: emergency stop active\n";
+            report(Outcome::Kind::Aborted, "emergency stop", 0, state_ == State::Slipping);
+            go_idle();
         }
         return;
     }
@@ -112,37 +184,44 @@ void SlipPerturbationNode::tick() {
     const ImuWatchdog watchdog(cfg_.imu_stale_ms);
     const bool imu_stale = watchdog.is_stale(imu, s.timestamp_ns);
 
-    // Consume any pending keyboard request (only while idle; ignore otherwise).
-    const int req = pending_request_.exchange(0, std::memory_order_acq_rel);
-    if (req != 0) {
-        const Mode mode = static_cast<Mode>(req);
+    // Consume a pending request (only while idle; refuse otherwise).
+    if (req) {
+        const Mode mode = req->mode;
         const char* name = mode_name(mode);
         std::string why;
+        auto refuse = [&](const std::string& reason) {
+            report(Outcome::Kind::Refused, reason, 0, false, req->id);
+        };
         if (state_ != State::Idle) {
             std::cerr << "[slip] request ignored: slip already in progress\n";
+            refuse("slip already in progress");
         } else if (imu_stale) {
             // A dead slip-foot IMU means no HS will ever arrive: say so now
             // instead of sitting armed forever (2026-09-08 run).
             std::cerr << "[slip] REFUSED to arm " << name << ": " << cfg_.foot
                       << " IMU is stale (" << (imu.valid ? (s.timestamp_ns - imu.timestamp_ns) / 1000000 : -1)
                       << " ms old) -- check the sensor/cable\n";
+            refuse("IMU stale");
         } else if (!cmd_node_.is_drive_available(cfg_.foot, &why)) {
             std::cerr << "[slip] REFUSED to arm " << name << ": " << cfg_.foot << " " << why << '\n';
+            refuse("drive " + why);
         } else if (mode != Mode::AfterHS && !cfg_.stance_events_available) {
             std::cerr << "[slip] REFUSED to arm " << name << ": the gait FSM emits no FF/HO events"
                       << " (needs gait_detection.hs_contact_detection and"
                       << " gait_detection.stance_events.enabled)\n";
+            refuse("no FF/HO events");
         } else {
             // Seed the detection counter so we only react to the NEXT event,
             // not whatever phase happens to be current at arming time.
             last_seen_detection_count_ = gait.detection_count;
             detection_count_initialized_ = true;
-            current_mode_ = mode;
+            current_ = *req;
             state_ = State::Armed;
             std::cout << "[slip] armed mode=" << name << " foot=" << cfg_.foot << ": fires "
-                      << trigger_delay_ms(mode) << " ms after the next " << trigger_label(mode)
-                      << ", velocity " << slip_velocity_for(mode) << '\n';
+                      << current_.delay_ms << " ms after the next " << trigger_label(mode)
+                      << ", velocity " << current_.velocity << " for " << current_.duration_ms << " ms\n";
             std::cout.flush();
+            report(Outcome::Kind::Armed);
         }
     }
 
@@ -160,8 +239,8 @@ void SlipPerturbationNode::tick() {
             cmd_node_.release_external_control(cfg_.foot);
         }
         std::cerr << "[slip] aborted: fault on " << cfg_.foot << '\n';
-        state_ = State::Idle;
-        current_mode_ = Mode::None;
+        report(Outcome::Kind::Aborted, "drive fault", 0, state_ == State::Slipping);
+        go_idle();
         return;
     }
 
@@ -169,8 +248,8 @@ void SlipPerturbationNode::tick() {
     // event; a late-returning sensor must not fire a surprise slip.
     if (imu_stale && (state_ == State::Armed || state_ == State::DelayingBeforeSlip)) {
         std::cerr << "[slip] DISARMED: " << cfg_.foot << " IMU went stale while armed\n";
-        state_ = State::Idle;
-        current_mode_ = Mode::None;
+        report(Outcome::Kind::Disarmed, "IMU stale");
+        go_idle();
         return;
     }
 
@@ -182,13 +261,13 @@ void SlipPerturbationNode::tick() {
     // tick); we then want to start the slip in the SAME tick rather than
     // waiting for the next one.
     if (state_ == State::Armed) {
-        scan_for_trigger_event(trigger_label(current_mode_), trigger_delay_ms(current_mode_));
+        scan_for_trigger_event(trigger_label(current_.mode), current_.delay_ms);
     }
 
     // A mid/late-stance slip still waiting for its deadline must not fire once
     // the stance is over: toe-off (foot in the air), a new HS or an FSM resync
     // cancel it as a missed trial.
-    if (state_ == State::DelayingBeforeSlip && current_mode_ != Mode::AfterHS) {
+    if (state_ == State::DelayingBeforeSlip && current_.mode != Mode::AfterHS) {
         const char* ended = nullptr;
         bus_.for_each_gait_event_since(
             cfg_.foot, last_seen_detection_count_, [&](const GaitPhase& ev) {
@@ -199,11 +278,14 @@ void SlipPerturbationNode::tick() {
                 }
             });
         if (ended) {
-            std::cerr << "[slip] " << mode_name(current_mode_) << " CANCELLED: " << ended
-                      << " before the scheduled fire -- missed trial, press '"
-                      << mode_key(current_mode_) << "' again\n";
-            state_ = State::Idle;
-            current_mode_ = Mode::None;
+            std::cerr << "[slip] " << mode_name(current_.mode) << " CANCELLED: " << ended
+                      << " before the scheduled fire -- missed trial";
+            if (current_.id <= 0) {
+                std::cerr << ", press '" << mode_key(current_.mode) << "' again";
+            }
+            std::cerr << '\n';
+            report(Outcome::Kind::Cancelled, std::string(ended) + " before the fire time");
+            go_idle();
             return;
         }
     }
@@ -213,13 +295,14 @@ void SlipPerturbationNode::tick() {
     // one extra slip tick per transition.
     if (state_ == State::DelayingBeforeSlip && now >= timer_deadline_) {
         start_slip_now();
-        timer_deadline_ = now + std::chrono::milliseconds(cfg_.slip_duration_ms);
+        timer_deadline_ = now + std::chrono::milliseconds(current_.duration_ms);
         state_ = State::Slipping;
+        report(Outcome::Kind::Started);
     }
     if (state_ == State::Slipping && now >= timer_deadline_) {
         end_slip_now();
-        state_ = State::Idle;
-        current_mode_ = Mode::None;
+        report(Outcome::Kind::Completed);
+        go_idle();
     }
 }
 
@@ -231,6 +314,7 @@ void SlipPerturbationNode::scan_for_trigger_event(
     // timer is anchored to the event's actual timestamp, not to slip-tick
     // time, which keeps the slip onset aligned with the gait event.
     bool fired = false;
+    int64_t event_ns = 0;
     bus_.for_each_gait_event_since(
         cfg_.foot, last_seen_detection_count_,
         [&](const GaitPhase& ev) {
@@ -240,6 +324,7 @@ void SlipPerturbationNode::scan_for_trigger_event(
                 const auto event_time = std::chrono::steady_clock::time_point(
                     std::chrono::nanoseconds(ev.timestamp_ns));
                 timer_deadline_ = event_time + std::chrono::milliseconds(delay_ms);
+                event_ns = ev.timestamp_ns;
                 fired = true;
             }
         });
@@ -249,6 +334,7 @@ void SlipPerturbationNode::scan_for_trigger_event(
                   << " entry detected (count=" << last_seen_detection_count_
                   << "); firing in " << delay_ms << " ms from event time\n";
         std::cout.flush();
+        report(Outcome::Kind::Triggered, trigger_phase, event_ns);
     }
 }
 
@@ -277,16 +363,16 @@ void SlipPerturbationNode::update_stance_estimator() {
                 reset_estimator("gait FSM resync");
             }
             if (!note.empty()) {
-                std::cout << "[slip] stance estimator: " << note << '\n';
+                std::cout << "[slip] " << cfg_.foot << " stance estimator: " << note << '\n';
                 std::cout.flush();
             }
         });
 }
 
 void SlipPerturbationNode::start_slip_now() {
-    const int32_t velocity = slip_velocity_for(current_mode_);
-    std::cout << "[slip] START foot=" << cfg_.foot << " mode=" << mode_name(current_mode_)
-              << " velocity=" << velocity << " duration_ms=" << cfg_.slip_duration_ms << '\n';
+    const int32_t velocity = current_.velocity;
+    std::cout << "[slip] START foot=" << cfg_.foot << " mode=" << mode_name(current_.mode)
+              << " velocity=" << velocity << " duration_ms=" << current_.duration_ms << '\n';
     // Estimator diagnostic: where the prediction would have put this stride's
     // toe-off, and (at the next TO) how long the stance really was.
     if (est_last_hs_ns_ > 0 && est_pred_at_hs_ns_ > 0) {

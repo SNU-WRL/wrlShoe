@@ -43,7 +43,11 @@ DataLogger::DataLogger(const std::string& path) : file_(path, std::ios::out | st
             // Appended 2026-10-02: calibrated magnetometer (uT), 100 Hz,
             // sample-and-hold like the other IMU columns. 0 with firmware
             // built with ENABLE_MAG 0.
-            << "imu_left_mx,imu_left_my,imu_left_mz,imu_right_mx,imu_right_my,imu_right_mz"
+            << "imu_left_mx,imu_left_my,imu_left_mz,imu_right_mx,imu_right_my,imu_right_mz,"
+            // Appended 2026-10-02: slip node state per foot (0 idle, 1 armed,
+            // 2 trigger seen, 3 slipping), scheduled slip number (0 = none)
+            // and the schedule's trial clock (s, -1 = not started).
+            << "slip_left_state,slip_right_state,sched_slip,sched_trial_time_s"
           << '\n';
 
     file_ << std::fixed << std::setprecision(6);
@@ -186,7 +190,9 @@ void DataLogger::write_row(const SystemSnapshot& s) {
           << s.imu_right.node_status.timeouts << ',' << s.imu_right.node_status.tx_dropped << ','
           << s.log_queue_depth << ',' << s.log_dropped << ','
           << s.imu_left.mx << ',' << s.imu_left.my << ',' << s.imu_left.mz << ','
-          << s.imu_right.mx << ',' << s.imu_right.my << ',' << s.imu_right.mz
+          << s.imu_right.mx << ',' << s.imu_right.my << ',' << s.imu_right.mz << ','
+          << static_cast<int>(s.slip_left_state) << ',' << static_cast<int>(s.slip_right_state) << ','
+          << s.sched_slip << ',' << s.sched_trial_time_s
           << '\n';
 }
 

@@ -67,6 +67,35 @@ struct SlipConfig {
     int imu_stale_ms = 100;
 };
 
+// Schedule-driven slips (motorized_shoe_schedule_app, slip_schedule: in the
+// YAML). The schedule gives each slip's peak speed in m/s; the Elmo takes
+// encoder counts/s, so speed_m_s * counts_per_m() is what is commanded.
+struct SlipScheduleConfig {
+    // Geometry for m/s -> counts/s: motor encoder counts per motor revolution
+    // as the drive counts them (after quadrature x4), motor revolutions per
+    // wheel revolution, and the wheel diameter at the contact surface.
+    float encoder_counts_per_rev = 0.0f;
+    float gear_ratio = 0.0f;
+    float wheel_diameter_m = 0.0f;
+    // Measured override (counts per metre of surface travel); > 0 wins over
+    // the geometry.
+    float counts_per_m_override = 0.0f;
+    // Minimum time between delivered slip onsets; a slip is armed no earlier
+    // than this after the previous one actually fired.
+    float min_gap_s = 10.0f;
+    // A slip that cannot be delivered (stance ended first, IMU stale, drive
+    // fault, e-stop) is re-armed until this long after it became due, then
+    // recorded as missed.
+    float retry_window_s = 5.0f;
+    // Wait between attempts after a refusal (stale IMU, drive unavailable).
+    int refused_retry_ms = 250;
+    // Safety: a schedule row faster than this is rejected at load.
+    float max_speed_m_s = 1.5f;
+
+    // 0 = not configured (the app refuses to run a schedule).
+    double counts_per_m() const;
+};
+
 struct GaitThresholds {
     // Gyro negative-peak thresholds (rad/s), the only two the two-state FSM uses:
     // -80 deg/s = -1.3963 rad/s, -200 deg/s = -3.4907 rad/s
@@ -181,6 +210,7 @@ struct Config {
         {"Stance", 0}, {"Swing", 200000}};
 
     SlipConfig slip;
+    SlipScheduleConfig slip_schedule;
 
     bool log_imu = false;
     bool log_gait = true;

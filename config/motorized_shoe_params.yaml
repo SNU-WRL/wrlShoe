@@ -210,6 +210,9 @@ elmo_config:
 #                (FF), direction `mid_stance_slip_direction`.
 #   mode2_key (late stance, forward -velocity): `late_stance_delay_ms` after
 #                the next heel-off (HO).
+# Direction (confirmed 2026-10-02): +velocity moves the foot ANTERIOR, -velocity
+# POSTERIOR. The older words used here mean: backward = +velocity = anterior,
+# forward = -velocity = posterior.
 # Modes 2/3 need gait_detection.hs_contact_detection and stance_events; a
 # mid/late-stance slip still waiting when the stance ends (TO/HS/RESET) is
 # cancelled as a missed trial.
@@ -222,7 +225,7 @@ slip_perturbation:
   # Mid stance: delay after foot-flat (ms). 0-250 always lands in the flat
   # phase (2026-09-22/23: heel-off >= 291 ms after FF); up to ~400 in 90 %.
   mid_stance_delay_ms: 200
-  mid_stance_slip_direction: "forward"   # "forward" (-velocity) or "backward" (+velocity)
+  mid_stance_slip_direction: "forward"   # "forward" = posterior (-velocity), "backward" = anterior (+velocity); anterior/posterior also accepted
   # Late stance: delay after heel-off (ms). HO leaves ~100 ms (p10 60) before
   # lift-off and the drive needs 30-45 ms to reach speed, so keep this small.
   late_stance_delay_ms: 0
@@ -261,6 +264,28 @@ slip_perturbation:
   mode1_key: "1"
   mode2_key: "2"
   mode3_key: "3"
+
+# Schedule-driven slips (motorized_shoe_schedule_app). The schedule CSV comes
+# from tools/slip_schedule_planner.html and gives each slip's foot, type
+# (Early/Mid/Late = HS/FF/HO trigger, as keys 1/3/2 above), peak speed in m/s
+# and optionally direction / delay_ms; everything else (burst length, profile
+# acceleration, default delays and mid-stance direction) is slip_perturbation
+# above. Check a schedule without hardware:
+#   build/motorized_shoe_schedule_app --schedule <file.csv> --trial 1 --dry-run
+slip_schedule:
+  # m/s -> Elmo counts/s = speed * encoder_counts_per_rev * gear_ratio / (pi * wheel_diameter_m).
+  # All 0 = not configured: the app refuses to run a schedule.
+  # 2026-10-02: 4096 * 9.73 / (pi * 0.055) = 230,654 counts per m, so 1 m/s = 230,654 counts/s
+  # (the old slip_velocity 100000 = 0.43 m/s, 350000 = 1.52 m/s). 4096 = counts after quadrature;
+  # the factor matches the speeds measured in earlier trials (confirmed 2026-10-02).
+  encoder_counts_per_rev: 4096  # motor encoder counts per motor revolution, as the drive counts them (after x4)
+  gear_ratio: 9.73              # motor revolutions per wheel revolution
+  wheel_diameter_m: 0.055       # at the contact surface
+  counts_per_m: 0             # measured override (counts per metre of travel); > 0 wins over the geometry
+  min_gap_s: 10               # between FIRED slips; a slip is armed no earlier than this after the previous one fired
+  retry_window_s: 5           # not delivered (stance ended, IMU stale, fault, e-stop): retry this long after due, then missed
+  refused_retry_ms: 250       # wait after a refusal before re-arming
+  max_speed_m_s: 1.5          # safety: schedule rows above this are rejected at load
 
 # Logging Configuration
 logging:
