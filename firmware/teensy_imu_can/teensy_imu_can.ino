@@ -1,27 +1,36 @@
 // Motorized-shoe IMU node: one Teensy (FlexCAN_T4) reading two BNO085s over
 // UART (SH-2 mode) and streaming them on the Pi's can1 at 500 kbit/s.
 //
-// Frame format is UNCHANGED from the previous sketch (same IDs, same int16
-// scaling), so the Pi app keeps working as is. What changed (2026-09-13):
+// Frame IDs, the 1 Hz status frame and the gyro / accel / rotation-vector
+// scaling are UNCHANGED, so the Pi app keeps working as is. The calibrated
+// magnetometer (0x113 / 0x123, logged since 2026-10-02) is sent as uT x 16,
+// the BNO085's native Q4 (+-2048 uT); the Pi divides by 16. The old uT x 1000
+// clipped at +-32.8 uT, below Earth's field. Bus load with mag: ~800
+// frames/s, ~16% of 500 kbit/s.
 //
-//  1. Sensor resets are handled. A BNO085 that resets (supply dip, glitch on
-//     its reset line, internal fault) comes back with every report disabled
-//     and only tells the host through wasReset(). The old sketch never looked,
-//     so that foot went silent for good -- the clean-cut dropouts seen on
-//     2026-09-08 (one sensor) and 2026-09-11 (the other). Now the reports are
-//     re-enabled as soon as the reset is seen.
-//  2. Per-sensor timeout. No report for IMU_TIMEOUT_MS -> pulse that sensor's
-//     reset line and re-enable; every 4th consecutive timeout re-opens the
-//     UART link from scratch. A sensor that failed at boot is retried the
-//     same way, so a late-powered foot still comes up.
-//  3. Frames are sent as each report arrives instead of waiting for a full
-//     accel+rv+gyro+mag set, so the gyro (the only channel the gait detector
-//     uses) no longer depends on the other three. The magnetometer is not
-//     requested at all (nothing consumes it). The Pi counts samples on the
-//     gyro frame, so this is transparent to it.
-//  4. A 1 Hz status frame per sensor (0x11F / 0x12F) carries gyro frames/s,
-//     reset count, timeout count and the CAN tx-drop count, so the Pi log
-//     shows WHY a sensor went quiet.
+// What changed vs readUART_sendCANIMU_reset (2026-09-15), and why:
+//
+//  The 2026-09-15 logs show every left-IMU dropout as an identical 694 ms
+//  outage, with the healthy right IMU losing 3 x 30 ms + 365 ms alongside it.
+//  Cause: the old serviceImu() ran its recovery with blocking delay()s in the
+//  single loop, and its retry period (IMU_TIMEOUT_MS 50 + 30 ms pulse = 81 ms)
+//  was shorter than the BNO085's reboot (~140 ms), so reset pulses 1-3 kept
+//  re-resetting a sensor that was still booting. Only the 4th attempt
+//  (begin_UART, which waits for the reset advertisement) ever worked.
+//
+//  1. Recovery is a per-sensor, non-blocking state machine. A timeout drops
+//     the reset line for RESET_PULSE_MS, raises it, then keeps servicing the
+//     port until the reset advertisement arrives (wasReset()) and re-enables
+//     the reports. The other sensor is serviced normally the whole time.
+//  2. Detection and back-off are separate. IMU_TIMEOUT_MS (50) still decides
+//     WHEN a sensor is silent; RESET_WAIT_MS (300) is how long one reset gets
+//     to produce an advertisement before it counts as failed.
+//  3. begin_UART() (blocking, ~350 ms) is the fallback only, after
+//     REOPEN_AFTER_FAILS reset pulses in a row produced no advertisement.
+//     Its delay(100) is gone: getProdIds() already proved the hub is talking.
+//  4. Bigger buffers so a block on one port can never destroy the other's
+//     data: 4 KB UART RX per port (~470 ms at 4 reports x 100 Hz) and a
+//     64-entry CAN TX queue for the burst that follows any block.
 //
 // Report rate is 100 Hz (10000 us) on purpose: the Pi's gait FSM converts all
 // its time windows with sampling_frequency: 100. Do not raise it without
@@ -30,7 +39,7 @@
 #include <Adafruit_BNO08x.h>
 #include <FlexCAN_T4.h>
 
-FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can0;
+FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_64> can0;
 
 // ---- CAN config -------------------------------------------------------
 // CAN_LOOPBACK 1 = internal self-test. The controller ACKs its own frames, so
@@ -44,9 +53,12 @@ FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can0;
 #define BNO1_RESET 5
 #define BNO2_RESET 6
 #define REPORT_INTERVAL_US 10000   // 100 Hz, must match the Pi's sampling_frequency
-#define IMU_TIMEOUT_MS     250     // no report for this long -> recover the sensor
-#define IMU_REOPEN_EVERY   4       // every Nth consecutive timeout: full begin_UART
-#define ENABLE_MAG         0       // magnetometer frames (0x113/0x123); unused on the Pi
+#define IMU_TIMEOUT_MS     50      // no report for this long -> start a recovery
+#define RESET_PULSE_MS     10      // RSTN held low
+#define RESET_WAIT_MS      300     // one reset gets this long to advertise (boot seen ~140 ms)
+#define REOPEN_AFTER_FAILS 2       // failed pulses in a row before a full begin_UART
+#define REOPEN_RETRY_MS    2000    // a port that never opened is retried this often
+#define ENABLE_MAG         1       // calibrated magnetometer frames (0x113/0x123, uT x 16), logged on the Pi
 
 // Optional hardware watchdog (Teensy 4.x only, needs Watchdog_t4.h from
 // Teensyduino >= 1.54). Resets the board if loop() ever stalls for > 2 s.
@@ -70,7 +82,10 @@ WDT_T4<WDT1> wdt;
 #define CAN_ID_IMU2_STATUS 0x12F
 
 // Extra UART receive buffer space for the two IMU ports (see setup()).
-uint8_t serial1RxExtra[1024], serial2RxExtra[1024];
+// ~8.7 KB/s per sensor at 4 reports x 100 Hz (gyro, rv, accel, mag), so 4 KB
+// is ~470 ms of headroom: still longer than the worst remaining block (the
+// begin_UART fallback, ~350 ms).
+uint8_t serial1RxExtra[4096], serial2RxExtra[4096];
 
 // TX health counters. txOk climbs when a frame is accepted into a mailbox;
 // txDropped climbs when write() is refused, which means the TX mailboxes are
@@ -78,6 +93,13 @@ uint8_t serial1RxExtra[1024], serial2RxExtra[1024];
 uint32_t txOk = 0, txDropped = 0;
 uint32_t lastStatusMs = 0;
 uint32_t lastTxOk = 0, lastTxDropped = 0, canResets = 0;
+
+// Recovery state of one sensor (see serviceImu()).
+enum RecoveryState : uint8_t {
+  RS_RUNNING,     // reports flowing, or silent but not yet timed out
+  RS_RESET_LOW,   // RSTN held low, waiting RESET_PULSE_MS
+  RS_RESET_WAIT   // RSTN released, waiting for the reset advertisement
+};
 
 // Everything that belongs to one sensor.
 struct Imu {
@@ -90,9 +112,11 @@ struct Imu {
   bool open = false;          // begin_UART() succeeded
   uint32_t lastEventMs = 0;   // last report of any kind
   uint32_t gyroFrames = 0;    // gyro frames sent this second
-  uint16_t resets = 0;        // wasReset() seen (sensor rebooted)
-  uint16_t timeouts = 0;      // recoveries forced by IMU_TIMEOUT_MS
-  uint8_t consecutiveTimeouts = 0;
+  uint16_t resets = 0;        // spontaneous resets (wasReset() with no recovery running)
+  uint16_t timeouts = 0;      // recoveries started by IMU_TIMEOUT_MS
+  RecoveryState rstate = RS_RUNNING;
+  uint32_t rstateMs = 0;      // when rstate was entered
+  uint8_t failedPulses = 0;   // reset pulses in a row that produced no advertisement
   sh2_SensorValue_t value;
 
   Imu(HardwareSerial *p, int rst, const char *n,
@@ -125,10 +149,8 @@ void setup(void) {
   digitalWrite(BNO2_RESET, HIGH);
   delay(300);
 
-  // Enlarge the serial RX buffers. The default is 64 bytes, which at 3 Mbaud
-  // fills in ~200 us. Both IMUs stream continuously while loop() is busy
-  // packing and sending CAN frames, so give each port ~3.4 ms of headroom.
-  // Must be called once, before begin_UART() opens the ports.
+  // Enlarge the serial RX buffers (default 64 bytes fills in ~200 us at
+  // 3 Mbaud). Must be called once, before begin_UART() opens the ports.
   Serial1.addMemoryForRead(serial1RxExtra, sizeof(serial1RxExtra));
   Serial2.addMemoryForRead(serial2RxExtra, sizeof(serial2RxExtra));
 
@@ -143,8 +165,6 @@ void setup(void) {
   cfg.timeout = 2;   // seconds
   wdt.begin(cfg);
 #endif
-
-  delay(100);
 }
 
 void loop() {
@@ -181,7 +201,9 @@ void loop() {
 // ---------------------------------------------------------------------------
 // IMU handling
 
-// Open the UART link with `attempts` reset pulses; never blocks forever.
+// Full UART bring-up with `attempts` reset pulses. BLOCKING (~350 ms per
+// attempt: reset, soft reset, advertisement wait, product IDs, report
+// enables). Used at boot and as the last-resort recovery only.
 bool openImu(Imu &imu, int attempts) {
   imu.open = false;
   for (int attempt = 0; attempt < attempts && !imu.open; attempt++) {
@@ -192,16 +214,20 @@ bool openImu(Imu &imu, int attempts) {
     pulseReset(imu.resetPin);
   }
   if (imu.open) {
-    delay(100);
+    // No settle delay: begin_UART() returned only after the hub answered
+    // sh2_getProdIds(), so it is ready for the report enables now.
     setReports(imu);
     // begin_UART() itself resets the sensor; consume that flag so it is not
     // counted as a spontaneous reset.
     (void)imu.bno.wasReset();
   }
+  imu.rstate = RS_RUNNING;
+  imu.failedPulses = 0;
   imu.lastEventMs = millis();
   return imu.open;
 }
 
+// Boot-time only (blocking); the runtime recovery pulses the pin itself.
 void pulseReset(int pin) {
   digitalWrite(pin, LOW);
   delay(50);
@@ -218,34 +244,78 @@ void setReports(Imu &imu) {
 #endif
 }
 
-// Drain one event, send its frame, and run the reset / timeout recovery.
+// Begin a recovery for a silent sensor. Non-blocking: drops RSTN and hands
+// the rest to the state machine in serviceImu(). Falls back to the blocking
+// openImu() only when the port never opened or the pulses keep failing.
+void startRecovery(Imu &imu) {
+  imu.timeouts++;
+  if (!imu.open || imu.failedPulses >= REOPEN_AFTER_FAILS) {
+    openImu(imu, 1);
+    return;
+  }
+  digitalWrite(imu.resetPin, LOW);
+  imu.rstate = RS_RESET_LOW;
+  imu.rstateMs = millis();
+}
+
+// Drain reports, send frames, and step the recovery state machine.
+// Nothing in here blocks except setReports() (a few ms per enable) and the
+// last-resort openImu().
 void serviceImu(Imu &imu) {
+  const uint32_t now = millis();
+
+  // 1. Reports. The library read is non-blocking, and this keeps running
+  //    during a recovery so the reset advertisement gets parsed.
   if (imu.open && imu.bno.getSensorEvent(&imu.value)) {
-    imu.lastEventMs = millis();
-    imu.consecutiveTimeouts = 0;
+    imu.lastEventMs = now;
+    imu.failedPulses = 0;
     handleEvent(imu, &imu.value);
   }
 
-  // A reset drops every enabled report: re-enable immediately.
+  // 2. Reset advertisement (ours or spontaneous): the hub comes back with
+  //    every report disabled, so re-enable them and resume.
   if (imu.open && imu.bno.wasReset()) {
-    imu.resets++;
-    delay(20);
+    if (imu.rstate == RS_RUNNING) {
+      imu.resets++;               // nobody asked for it: count as spontaneous
+    }
     setReports(imu);
-    imu.lastEventMs = millis();
+    imu.rstate = RS_RUNNING;
+    imu.failedPulses = 0;
+    imu.lastEventMs = millis();   // reports start within a few intervals
+    return;
   }
 
-  // Silent sensor: pulse its reset line (the reset advertisement then
-  // triggers the re-enable above). Every IMU_REOPEN_EVERY-th consecutive
-  // timeout, or if the port never opened, redo the whole UART bring-up.
-  if (millis() - imu.lastEventMs > IMU_TIMEOUT_MS) {
-    imu.timeouts++;
-    imu.consecutiveTimeouts++;
-    if (!imu.open || (imu.consecutiveTimeouts % IMU_REOPEN_EVERY) == 0) {
-      openImu(imu, 1);
-    } else {
-      imu.bno.hardwareReset();
+  // 3. Recovery state machine.
+  switch (imu.rstate) {
+    case RS_RUNNING: {
+      // A port that never opened (unplugged foot) can only be retried with
+      // the blocking openImu(), so pace that at REOPEN_RETRY_MS instead of
+      // starving the other sensor every IMU_TIMEOUT_MS.
+      const uint32_t limit = imu.open ? IMU_TIMEOUT_MS : REOPEN_RETRY_MS;
+      if (now - imu.lastEventMs > limit) {
+        startRecovery(imu);
+      }
+      break;
     }
-    imu.lastEventMs = millis();   // back off one full timeout before retrying
+
+    case RS_RESET_LOW:
+      if (now - imu.rstateMs >= RESET_PULSE_MS) {
+        digitalWrite(imu.resetPin, HIGH);
+        imu.rstate = RS_RESET_WAIT;
+        imu.rstateMs = now;
+      }
+      break;
+
+    case RS_RESET_WAIT:
+      if (now - imu.rstateMs > RESET_WAIT_MS) {
+        // No advertisement: the pulse did nothing (line not wired? hub hung
+        // hard?). Try again right away; after REOPEN_AFTER_FAILS of these
+        // startRecovery() escalates to the full bring-up.
+        imu.failedPulses++;
+        imu.rstate = RS_RUNNING;
+        startRecovery(imu);
+      }
+      break;
   }
 }
 
@@ -280,9 +350,11 @@ void handleEvent(Imu &imu, sh2_SensorValue_t *v) {
       break;
 #if ENABLE_MAG
     case SH2_MAGNETIC_FIELD_CALIBRATED:
-      c[0] = (int16_t)(v->un.magneticField.x * 1000);
-      c[1] = (int16_t)(v->un.magneticField.y * 1000);
-      c[2] = (int16_t)(v->un.magneticField.z * 1000);
+      // uT x 16 = the BNO085's native Q4, so nothing is lost and the range
+      // (+-2048 uT) covers the sensor's own. The Pi divides by 16.
+      c[0] = (int16_t)lroundf(constrain(v->un.magneticField.x * 16, -32768, 32767));
+      c[1] = (int16_t)lroundf(constrain(v->un.magneticField.y * 16, -32768, 32767));
+      c[2] = (int16_t)lroundf(constrain(v->un.magneticField.z * 16, -32768, 32767));
       memcpy(bytes, c, 6);
       sendframe(imu.idMag, bytes, 6);
       break;
@@ -292,9 +364,9 @@ void handleEvent(Imu &imu, sh2_SensorValue_t *v) {
   }
 }
 
-// Status frame, 8 bytes little-endian:
+// Status frame, 8 bytes little-endian (unchanged layout):
 //   [0:2] gyro frames sent in the last second (expect 100)
-//   [2:4] sensor reset count (wasReset)
+//   [2:4] spontaneous sensor reset count (wasReset with no recovery running)
 //   [4:6] timeout-recovery count
 //   [6:8] CAN tx-dropped count (whole node), low 16 bits
 void sendStatus(Imu &imu) {

@@ -23,11 +23,23 @@ struct SlipConfig {
     int32_t slip_velocity = 100000;       // counts/sec sent to ELMO during slip
     int slip_duration_ms = 150;           // how long the slip lasts
     int mode1_delay_after_hs_ms = 100;    // mode 1 (AfterHS): slip starts this long after HS
-    // Mode 2 (BeforeTO) is now a PREDICTED, HS-anchored trigger: on the next HS
-    // it schedules the slip to fire at t_HS + max(0, stance_est - to_slip_lead_ms),
-    // landing the -velocity burst just before the predicted toe-off.
-    int to_slip_lead_ms = 50;             // forward-slip lead before predicted TO
-    // Stance estimator (see stance_estimator.hpp): medians over the last
+    // Mode 3 (MidStance): slip starts this long after the next foot-flat (FF)
+    // event, in mid_stance_slip_direction ("forward" = -velocity like the
+    // late-stance slip, "backward" = +velocity like the AfterHS slip).
+    int mid_stance_delay_ms = 200;
+    std::string mid_stance_slip_direction = "forward";
+    // Mode 2 (LateStance): forward (-velocity) slip starts this long after the
+    // next heel-off (HO) event.
+    int late_stance_delay_ms = 0;
+    // Copied at load time: true when the gait FSM emits FF/HO (contact HS mode
+    // with stance events on); modes 2 and 3 refuse to arm otherwise.
+    bool stance_events_available = false;
+    // DEPRECATED: the estimator-predicted BeforeTO trigger was replaced by the
+    // heel-off trigger (mode 2). Parsed but unused.
+    int to_slip_lead_ms = 50;
+    // Stance estimator (diagnostic only since the heel-off trigger: its
+    // prediction is printed when a slip fires and compared with the measured
+    // stance at the next toe-off; it no longer schedules anything). Medians over the last
     // `stance_est_window` clean cycles; a sample is clean only inside the
     // stance/cycle plausibility windows; an HS gap above reset_gap_ms, an FSM
     // resync, a drive fault or an emergency stop reset it, after which
@@ -48,6 +60,7 @@ struct SlipConfig {
     // be spent ramping. 1e7 collapses the ramp to ~15 ms.
     int32_t slip_profile_acceleration = 10000000;
     char mode1_key = '1';
+    char mode3_key = '3';
     char mode2_key = '2';
     // Copied from Config::imu_stale_ms at load time so the slip node can
     // refuse to arm on a dead slip-foot IMU.
@@ -153,6 +166,10 @@ struct Config {
     bool gait_to_inflection_detection = false;
     float gait_to_inflection_ratio = 0.5f;
     int gait_to_inflection_min_armed_ms = 30;
+    // Contact mode only: FF / HO stance sub-phase events
+    // (gait_detection.stance_events.*); see GaitEventFSM::set_stance_events.
+    bool gait_stance_events = false;
+    GaitEventFSM::StanceEventParams gait_stance_event_params;
     // Number of still samples (|global accel| in [9,11] m/s^2) averaged at
     // startup to estimate the per-foot gravity vector that is subtracted to
     // produce free acceleration. ~0.5 s at 120 Hz.

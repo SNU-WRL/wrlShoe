@@ -15,21 +15,23 @@
 namespace motorized_shoe {
 
 // Slip perturbation controller. Drives the ELMO command node to deliver
-// one-shot slip velocity bursts timed relative to gait events.
+// one-shot slip velocity bursts timed relative to gait events of the slip foot:
 //
-//   Mode AfterHS  -> backward slip. Fires `mode1_delay_after_hs_ms` after the
-//                    next HS event. Unchanged.
-//   Mode BeforeTO -> forward slip, now a PREDICTED, HS-anchored trigger. Toe-off
-//                    detection is after-the-fact (the TO peak is only confirmed
-//                    once gyro recovers), so we cannot react to TO and still fire
-//                    BEFORE it. Instead, on the next HS (the reliable anchor) we
-//                    schedule the slip for t_HS + max(0, stance_est - lead), where
-//                    stance_est is a running average of measured (t_TO - t_HS)
-//                    stance times. TO detection still runs (it defines the cycle
-//                    and feeds stance_est) but is not the trigger.
+//   Mode AfterHS    (key mode1) -> backward (+velocity) slip,
+//                    `mode1_delay_after_hs_ms` after the next HS (early stance).
+//   Mode MidStance  (key mode3) -> slip `mid_stance_delay_ms` after the next
+//                    foot-flat (FF) event, direction `mid_stance_slip_direction`.
+//   Mode LateStance (key mode2) -> forward (-velocity) slip
+//                    `late_stance_delay_ms` after the next heel-off (HO) event.
 //
-// A stance estimator runs every tick, independent of arming, consuming HS/TO
-// events to keep stance_est (and an HS->HS period for warm-up) up to date.
+// All three react to a detected event; nothing is predicted. FF and HO come
+// from the gait FSM (contact HS mode with gait_detection.stance_events on);
+// modes 2/3 refuse to arm without them. A mid/late-stance slip still waiting
+// for its deadline is cancelled if the stance ends first (TO, HS or RESET).
+//
+// The stance estimator still runs every tick as a DIAGNOSTIC only: when a slip
+// fires its predicted stance is printed, and at the next toe-off the measured
+// stance is printed next to it.
 //
 // Single-threaded: tick() runs in the main control loop. request_slip() is
 // safe to call from another thread (keyboard handler).
@@ -38,7 +40,8 @@ public:
     enum class Mode {
         None = 0,
         AfterHS = 1,
-        BeforeTO = 2,
+        LateStance = 2,
+        MidStance = 3,
     };
 
     SlipPerturbationNode(const SlipConfig& cfg, DataBus& bus, SendCanCommandToElmoNode& cmd_node);
@@ -51,8 +54,7 @@ public:
 private:
     enum class State {
         Idle,
-        ArmedAfterHS,
-        ArmedBeforeTO,
+        Armed,
         DelayingBeforeSlip,
         Slipping,
     };
@@ -62,14 +64,16 @@ private:
     // AfterHS path: fire `delay_ms` after the next `trigger_phase` event.
     void scan_for_trigger_event(const char* trigger_phase, int delay_ms);
 
-    // Stance estimator: runs every tick, consumes new HS/TO/RESET events for
-    // cfg_.foot (see stance_estimator.hpp for the robustness rules).
+    // Stance estimator (diagnostic): runs every tick, consumes new HS/TO/RESET
+    // events for cfg_.foot (see stance_estimator.hpp for the robustness rules).
     void update_stance_estimator();
-    // Schedule the forward (BeforeTO) slip to fire just before the predicted
-    // TO, anchored on the HS at time t_hs_ns. Returns false if the estimator
-    // isn't warm (caller skips one cycle until it is).
-    bool schedule_before_to(int64_t t_hs_ns);
     void reset_estimator(const char* reason);
+
+    static const char* mode_name(Mode mode);
+    const char* trigger_label(Mode mode) const;   // "HS" / "FF" / "HO"
+    int trigger_delay_ms(Mode mode) const;
+    char mode_key(Mode mode) const;
+    int32_t slip_velocity_for(Mode mode) const;
 
     const SlipConfig cfg_;
     DataBus& bus_;
@@ -82,16 +86,15 @@ private:
     uint32_t last_seen_detection_count_ = 0;
     bool detection_count_initialized_ = false;
 
-    // detection_count of the HS the forward slip is currently scheduled on, so a
-    // newer HS (cadence sped up / overshoot) can cancel and reschedule.
-    uint32_t before_to_anchor_count_ = 0;
-
-    // --- Stance estimator state (independent of arming) ---
+    // --- Stance estimator state (diagnostic, independent of arming) ---
     uint32_t est_cursor_ = 0;          // last event detection_count consumed
     StanceEstimator estimator_;
     bool estimator_had_data_ = false;  // suppress repeated reset messages
-    int64_t before_to_anchor_ts_ = 0;  // HS timestamp the forward slip is anchored on
-    uint32_t skipped_hs_logged_ = 0;   // last HS count reported as "not warm"
+    int64_t est_last_hs_ns_ = 0;       // latest HS seen by the estimator
+    int64_t est_pred_at_hs_ns_ = 0;    // its predicted stance at that HS (0 = not warm)
+    bool diag_pending_ = false;        // a slip fired; report predicted vs measured at TO
+    int64_t diag_hs_ns_ = 0;
+    int64_t diag_pred_ns_ = 0;
 };
 
 }  // namespace motorized_shoe

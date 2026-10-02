@@ -107,7 +107,9 @@ int main(int argc, char* argv[]) {
             if (c == cfg.slip.mode1_key) {
                 slip_node.request_slip(motorized_shoe::SlipPerturbationNode::Mode::AfterHS);
             } else if (c == cfg.slip.mode2_key) {
-                slip_node.request_slip(motorized_shoe::SlipPerturbationNode::Mode::BeforeTO);
+                slip_node.request_slip(motorized_shoe::SlipPerturbationNode::Mode::LateStance);
+            } else if (c == cfg.slip.mode3_key) {
+                slip_node.request_slip(motorized_shoe::SlipPerturbationNode::Mode::MidStance);
             } else if (c == 's' || c == 'S') {
                 cmd_node.request_emergency_stop(true);
             } else if (c == 'r' || c == 'R') {
@@ -128,9 +130,14 @@ int main(int argc, char* argv[]) {
                   << " velocity=" << cfg.slip.slip_velocity
                   << " duration=" << cfg.slip.slip_duration_ms << "ms"
                   << " hs_delay=" << cfg.slip.mode1_delay_after_hs_ms << "ms"
-                  << " to_slip_lead=" << cfg.slip.to_slip_lead_ms << "ms\n";
-        std::cout << "Keys: '" << cfg.slip.mode1_key << "' = slip after HS, '"
-                  << cfg.slip.mode2_key << "' = slip before predicted TO,"
+                  << " ff_delay=" << cfg.slip.mid_stance_delay_ms << "ms ("
+                  << cfg.slip.mid_stance_slip_direction << ")"
+                  << " ho_delay=" << cfg.slip.late_stance_delay_ms << "ms"
+                  << (cfg.slip.stance_events_available ? "" : " [FF/HO events OFF: modes 2/3 disabled]")
+                  << '\n';
+        std::cout << "Keys: '" << cfg.slip.mode1_key << "' = early stance (HS), '"
+                  << cfg.slip.mode3_key << "' = mid stance (foot-flat), '"
+                  << cfg.slip.mode2_key << "' = late stance (heel-off),"
                   << " 's' = stop motors, 'r' = resume, 'q' = quit\n";
         std::cout.flush();
 

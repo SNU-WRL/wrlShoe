@@ -240,6 +240,12 @@ Config load_config(const std::string& path) {
     apply_bool(kv, "gait_detection.to_inflection_detection", cfg.gait_to_inflection_detection);
     apply_float(kv, "gait_detection.to_inflection_ratio", cfg.gait_to_inflection_ratio);
     apply_int(kv, "gait_detection.to_inflection_min_armed_ms", cfg.gait_to_inflection_min_armed_ms);
+    apply_bool(kv, "gait_detection.stance_events.enabled", cfg.gait_stance_events);
+    apply_float(kv, "gait_detection.stance_events.ff_gyro_max", cfg.gait_stance_event_params.ff_gyro_max);
+    apply_int(kv, "gait_detection.stance_events.ff_min_ms", cfg.gait_stance_event_params.ff_min_ms);
+    apply_float(kv, "gait_detection.stance_events.ho_gyro_threshold", cfg.gait_stance_event_params.ho_gyro_threshold);
+    apply_int(kv, "gait_detection.stance_events.ho_min_ms", cfg.gait_stance_event_params.ho_min_ms);
+    apply_int(kv, "gait_detection.stance_events.ho_max_after_hs_ms", cfg.gait_stance_event_params.ho_max_after_hs_ms);
     apply_int(kv, "gait_detection.gravity_calib_samples", cfg.gravity_calib_samples);
 
     for (const char* phase : {"Stance", "Swing"}) {
@@ -260,6 +266,9 @@ Config load_config(const std::string& path) {
     apply_int(kv, "slip_perturbation.slip_duration_ms", cfg.slip.slip_duration_ms);
     apply_int(kv, "slip_perturbation.mode1_delay_after_hs_ms", cfg.slip.mode1_delay_after_hs_ms);
     apply_int(kv, "slip_perturbation.to_slip_lead_ms", cfg.slip.to_slip_lead_ms);
+    apply_int(kv, "slip_perturbation.mid_stance_delay_ms", cfg.slip.mid_stance_delay_ms);
+    apply_string(kv, "slip_perturbation.mid_stance_slip_direction", cfg.slip.mid_stance_slip_direction);
+    apply_int(kv, "slip_perturbation.late_stance_delay_ms", cfg.slip.late_stance_delay_ms);
     apply_int(kv, "slip_perturbation.stance_est_window", cfg.slip.stance_est_window);
     apply_int(kv, "slip_perturbation.stance_est_warmup_cycles", cfg.slip.stance_est_warmup_cycles);
     apply_int(kv, "slip_perturbation.stance_min_ms", cfg.slip.stance_min_ms);
@@ -281,9 +290,13 @@ Config load_config(const std::string& path) {
         s.clear();
         apply_string(kv, "slip_perturbation.mode2_key", s);
         if (!s.empty()) cfg.slip.mode2_key = s.front();
+        s.clear();
+        apply_string(kv, "slip_perturbation.mode3_key", s);
+        if (!s.empty()) cfg.slip.mode3_key = s.front();
     }
 
     cfg.slip.imu_stale_ms = cfg.imu_stale_ms;
+    cfg.slip.stance_events_available = cfg.gait_hs_contact_detection && cfg.gait_stance_events;
 
     apply_bool(kv, "logging.imu_data_log", cfg.log_imu);
     apply_bool(kv, "logging.gait_phase_log", cfg.log_gait);
