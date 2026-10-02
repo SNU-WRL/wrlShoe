@@ -188,6 +188,8 @@ int main(int argc, char* argv[]) {
             snapshot.command_node_latency_us = cmd_us;
             snapshot.loop_latency_us = loop_us;
             snapshot.log_latency_us = prev_log_us;
+            (cfg.slip.foot == "Left" ? snapshot.slip_left_state : snapshot.slip_right_state) =
+                static_cast<uint8_t>(slip_node.state());
             logger.queue_snapshot(snapshot);
 
             if ((tick_count % 10) == 0) {

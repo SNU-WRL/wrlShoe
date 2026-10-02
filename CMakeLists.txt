@@ -57,6 +57,25 @@ add_executable(motorized_shoe_slip_app
 
 target_link_libraries(motorized_shoe_slip_app pthread)
 
+add_executable(motorized_shoe_schedule_app
+  src/main_schedule.cpp
+  src/slip_schedule.cpp
+  src/can_utils.cpp
+  src/canopen_utils.cpp
+  src/gait_fsm.cpp
+  src/config.cpp
+  src/data_logger.cpp
+  src/keyboard_input.cpp
+  src/read_can_interpret_imu_node.cpp
+  src/gait_phase_detection_node.cpp
+  src/send_can_command_to_elmo_node.cpp
+  src/read_can_malfunction_from_elmo_node.cpp
+  src/slip_perturbation_node.cpp
+  src/stance_estimator.cpp
+)
+
+target_link_libraries(motorized_shoe_schedule_app pthread)
+
 add_executable(send_zero_velocity_to_elmo
   src/send_zero_velocity_to_elmo.cpp
   src/can_utils.cpp
@@ -76,6 +95,14 @@ target_link_libraries(disable_elmo_drive pthread)
 # Offline gait-FSM replay against logged IMU samples (no CAN, no hardware).
 add_executable(gait_fsm_replay
   tools/gait_fsm_replay.cpp
+  src/gait_fsm.cpp
+  src/config.cpp
+)
+
+# Offline check of the slip-schedule runner against simulated slip nodes.
+add_executable(slip_schedule_sim
+  tools/slip_schedule_sim.cpp
+  src/slip_schedule.cpp
   src/gait_fsm.cpp
   src/config.cpp
 )

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -166,6 +167,17 @@ void apply_string(const std::unordered_map<std::string, std::string>& kv, const 
 
 }  // namespace
 
+double SlipScheduleConfig::counts_per_m() const {
+    if (counts_per_m_override > 0.0f) {
+        return counts_per_m_override;
+    }
+    if (encoder_counts_per_rev <= 0.0f || gear_ratio <= 0.0f || wheel_diameter_m <= 0.0f) {
+        return 0.0;
+    }
+    // One wheel revolution = gear_ratio motor revolutions = pi * D of travel.
+    return static_cast<double>(encoder_counts_per_rev) * gear_ratio / (M_PI * wheel_diameter_m);
+}
+
 Config load_config(const std::string& path) {
     Config cfg;
     const auto kv = parse_yaml_key_values(path);
@@ -297,6 +309,15 @@ Config load_config(const std::string& path) {
 
     cfg.slip.imu_stale_ms = cfg.imu_stale_ms;
     cfg.slip.stance_events_available = cfg.gait_hs_contact_detection && cfg.gait_stance_events;
+
+    apply_float(kv, "slip_schedule.encoder_counts_per_rev", cfg.slip_schedule.encoder_counts_per_rev);
+    apply_float(kv, "slip_schedule.gear_ratio", cfg.slip_schedule.gear_ratio);
+    apply_float(kv, "slip_schedule.wheel_diameter_m", cfg.slip_schedule.wheel_diameter_m);
+    apply_float(kv, "slip_schedule.counts_per_m", cfg.slip_schedule.counts_per_m_override);
+    apply_float(kv, "slip_schedule.min_gap_s", cfg.slip_schedule.min_gap_s);
+    apply_float(kv, "slip_schedule.retry_window_s", cfg.slip_schedule.retry_window_s);
+    apply_int(kv, "slip_schedule.refused_retry_ms", cfg.slip_schedule.refused_retry_ms);
+    apply_float(kv, "slip_schedule.max_speed_m_s", cfg.slip_schedule.max_speed_m_s);
 
     apply_bool(kv, "logging.imu_data_log", cfg.log_imu);
     apply_bool(kv, "logging.gait_phase_log", cfg.log_gait);

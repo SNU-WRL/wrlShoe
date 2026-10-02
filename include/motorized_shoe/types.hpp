@@ -159,6 +159,15 @@ struct SystemSnapshot {
     // when this row was queued, and cumulative rows dropped (queue full).
     uint32_t log_queue_depth = 0;
     uint32_t log_dropped = 0;
+
+    // Filled by the slip / schedule apps (0 / -1 elsewhere): slip node state
+    // per foot (0 idle, 1 armed, 2 trigger seen / delaying, 3 slipping), the
+    // scheduled slip being delivered (planner slip number, 0 = none) and the
+    // schedule's trial clock (s, -1 = trial not started; stops during e-stop).
+    uint8_t slip_left_state = 0;
+    uint8_t slip_right_state = 0;
+    int32_t sched_slip = 0;
+    double sched_trial_time_s = -1.0;
 };
 
 }  // namespace motorized_shoe

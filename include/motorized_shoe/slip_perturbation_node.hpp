@@ -1,11 +1,13 @@
 #ifndef MOTORIZED_SHOE_SLIP_PERTURBATION_NODE_HPP
 #define MOTORIZED_SHOE_SLIP_PERTURBATION_NODE_HPP
 
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "motorized_shoe/config.hpp"
 #include "motorized_shoe/data_bus.hpp"
@@ -33,8 +35,13 @@ namespace motorized_shoe {
 // fires its predicted stance is printed, and at the next toe-off the measured
 // stance is printed next to it.
 //
+// A request can override the YAML velocity, delay and duration (the schedule
+// app does, per slip). Requests with an id > 0 report what happened to them
+// through take_outcomes(); keyboard requests (id 0) only print.
+//
 // Single-threaded: tick() runs in the main control loop. request_slip() is
-// safe to call from another thread (keyboard handler).
+// safe to call from another thread (keyboard handler); cancel() and
+// take_outcomes() must be called from the control-loop thread.
 class SlipPerturbationNode {
 public:
     enum class Mode {
@@ -44,20 +51,76 @@ public:
         MidStance = 3,
     };
 
+    enum class State {
+        Idle = 0,
+        Armed = 1,
+        DelayingBeforeSlip = 2,
+        Slipping = 3,
+    };
+
+    struct Request {
+        Mode mode = Mode::None;
+        int32_t velocity = 0;   // signed counts/s (+ = backward, - = forward)
+        int delay_ms = 0;       // after the trigger event
+        int duration_ms = 0;
+        int id = 0;             // > 0: outcomes are reported with this id
+    };
+
+    struct Outcome {
+        enum class Kind {
+            Armed,      // waiting for the trigger event
+            Triggered,  // trigger event seen; event_ns = its timestamp
+            Started,    // velocity commanded
+            Completed,  // burst over, velocity 0 commanded
+            Refused,    // never armed (busy, IMU stale, drive unavailable, e-stop, no FF/HO)
+            Cancelled,  // stance ended before the fire time, or cancel()
+            Disarmed,   // slip-foot IMU went stale while armed
+            Aborted,    // drive fault or e-stop while active (see during_slip)
+        };
+        int id = 0;
+        Kind kind = Kind::Armed;
+        int64_t time_ns = 0;     // steady clock, same base as the log
+        int64_t event_ns = 0;    // Triggered: gait event timestamp
+        bool during_slip = false;  // Aborted: the burst had already started
+        std::string detail;
+    };
+
     SlipPerturbationNode(const SlipConfig& cfg, DataBus& bus, SendCanCommandToElmoNode& cmd_node);
 
     void tick();
+    // Keyboard path: velocity, delay and duration from the YAML.
     void request_slip(Mode mode);
+    void request_slip(const Request& request);
+    // Drops a pending request and disarms an armed / delaying slip (reported
+    // as Cancelled with `reason`). A slip already running is not touched;
+    // returns false in that case.
+    bool cancel(const std::string& reason);
+    std::vector<Outcome> take_outcomes();
 
     bool is_active() const;
+    State state() const { return state_; }
+    Mode current_mode() const { return current_.mode; }
+    const std::string& foot() const { return cfg_.foot; }
+
+    static const char* mode_name(Mode mode);
+    static const char* outcome_name(Outcome::Kind kind) {
+        switch (kind) {
+            case Outcome::Kind::Armed: return "armed";
+            case Outcome::Kind::Triggered: return "triggered";
+            case Outcome::Kind::Started: return "started";
+            case Outcome::Kind::Completed: return "completed";
+            case Outcome::Kind::Refused: return "refused";
+            case Outcome::Kind::Cancelled: return "cancelled";
+            case Outcome::Kind::Disarmed: return "disarmed";
+            case Outcome::Kind::Aborted: return "aborted";
+        }
+        return "?";
+    }
+    // YAML defaults for a mode: signed velocity and trigger delay.
+    int32_t default_velocity(Mode mode) const;
+    int default_delay_ms(Mode mode) const;
 
 private:
-    enum class State {
-        Idle,
-        Armed,
-        DelayingBeforeSlip,
-        Slipping,
-    };
 
     void start_slip_now();
     void end_slip_now();
@@ -69,19 +132,21 @@ private:
     void update_stance_estimator();
     void reset_estimator(const char* reason);
 
-    static const char* mode_name(Mode mode);
     const char* trigger_label(Mode mode) const;   // "HS" / "FF" / "HO"
-    int trigger_delay_ms(Mode mode) const;
     char mode_key(Mode mode) const;
-    int32_t slip_velocity_for(Mode mode) const;
+    void report(Outcome::Kind kind, const std::string& detail = "", int64_t event_ns = 0,
+                bool during_slip = false, int id = -1);
+    void go_idle();
 
     const SlipConfig cfg_;
     DataBus& bus_;
     SendCanCommandToElmoNode& cmd_node_;
 
-    std::atomic<int> pending_request_{0};  // Mode value
+    std::mutex pending_mutex_;
+    std::optional<Request> pending_request_;
     State state_ = State::Idle;
-    Mode current_mode_ = Mode::None;
+    Request current_;
+    std::vector<Outcome> outcomes_;
     std::chrono::steady_clock::time_point timer_deadline_{};
     uint32_t last_seen_detection_count_ = 0;
     bool detection_count_initialized_ = false;

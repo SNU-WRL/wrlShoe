@@ -166,3 +166,32 @@ ERROR-ACTIVE and RX/TX packets must count up.
   (`gait_detection.stance_events`, contact HS mode only). The stance estimator no
   longer schedules slips; it prints its prediction next to the measured stance.
   Replay: `docs/stance_phase_slips_replay_2026-09-29.txt`.
+- Scheduled slip experiments (`motorized_shoe_schedule_app`): runs one trial of a
+  randomized schedule made with `tools/slip_schedule_planner.html` (open it in a
+  browser, **Download CSV**). Each row gives foot, type (Early/Mid/Late = the
+  HS/FF/HO triggers above), peak speed in m/s and the arm time; blank
+  `direction` / `delay_ms` take the YAML defaults. Direction: anterior =
+  +velocity, posterior = -velocity. The planner's **Condition list** design
+  (preset "wrlShoe timing study") gives each condition its own trigger + delay,
+  direction and magnitude, e.g. `5 FF+450 posterior Mid`, and splits every
+  condition between two feet with equal totals per foot. Set the m/s -> counts/s
+  geometry in `slip_schedule:` first. Check a schedule without hardware, then run:
+
+  ```bash
+  ./build/motorized_shoe_schedule_app --schedule slip_schedule_seed2026_fixed.csv --trial 1 --dry-run
+  sudo ./build/motorized_shoe_schedule_app --schedule slip_schedule_seed2026_fixed.csv --trial 1
+  ```
+
+  Keys: `g` starts the trial clock, `s` stops the motors and pauses the clock,
+  `r` resumes, `q` quits. The minimum gap is enforced between slips that actually
+  fired; a slip that cannot be delivered is retried for `retry_window_s`, then
+  recorded as missed; a burst cut short by a fault or e-stop is recorded as
+  aborted and not repeated. Each run writes `<ts>_sched_trial<N>_log.csv`,
+  `_events.csv` (every armed / fired / missed step), `_schedule.csv` (the input
+  as run) and `_summary.txt` (delivered / missed per combination). Resume an
+  interrupted trial with `--from-slip K`. `build/slip_schedule_sim` checks the
+  scheduling logic offline against simulated slip nodes.
+
+  Conversion: 4096 counts per motor revolution (after quadrature), 9.73:1, 55 mm
+  wheel = 230,654 counts per m, so 1 m/s = 230,654 counts/s; this matches the
+  speeds measured in earlier trials.
