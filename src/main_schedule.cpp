@@ -16,14 +16,18 @@
 //   _schedule.csv  copy of the schedule file as run
 //   _summary.txt   the parsed plan and delivered / missed per combination
 //
-// Keys: 'g' start the trial clock, 's' stop motors (pauses the trial clock),
-// 'r' resume, 'q' quit. The manual slip keys are disabled here.
+// The trial clock starts by itself slip_schedule.start_delay_s (15 s) after
+// every drive the schedule uses is locked (answering on CAN, Operation
+// Enabled); a drive dropping out or an e-stop before then restarts the
+// countdown. Keys: 's' stop motors (pauses the trial clock / cancels the
+// countdown), 'r' resume, 'q' quit. The manual slip keys are disabled here.
 
 #include <pthread.h>
 #include <sched.h>
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <csignal>
 #include <ctime>
@@ -196,7 +200,7 @@ int main(int argc, char* argv[]) {
         params.refused_retry_s = cfg.slip_schedule.refused_retry_ms / 1000.0;
         std::cout << "Rules: min gap " << params.min_gap_s << " s between fired slips, retry for "
                   << params.retry_window_s << " s after a slip is due, burst " << cfg.slip.slip_duration_ms
-                  << " ms at profile acceleration " << cfg.slip.slip_profile_acceleration << " counts/s^2\n";
+                  << " ms unless the schedule's duration_ms says otherwise, profile acceleration " << cfg.slip.slip_profile_acceleration << " counts/s^2\n";
 
         if (dry_run) {
             std::cout << "Dry run: nothing commanded.\n";
@@ -262,12 +266,9 @@ int main(int argc, char* argv[]) {
                       << std::setprecision(1) << runner.start_offset_s() << " s\n";
         }
 
-        std::atomic<bool> start_requested{false};
         motorized_shoe::KeyboardInput keyboard;
         keyboard.start([&](char c) {
-            if (c == 'g' || c == 'G') {
-                start_requested.store(true);
-            } else if (c == 's' || c == 'S') {
+            if (c == 's' || c == 'S') {
                 cmd_node.request_emergency_stop(true);
             } else if (c == 'r' || c == 'R') {
                 cmd_node.request_emergency_stop(false);
@@ -281,11 +282,13 @@ int main(int argc, char* argv[]) {
         uint64_t tick_count = 0;
         uint32_t prev_log_us = 0;
         int64_t log_origin_ns = 0;
-        bool start_refused_reported = false;
+        const double start_delay_s = cfg.slip_schedule.start_delay_s;
+        int64_t locked_since_ns = 0;   // when all needed drives became locked, 0 = not locked
+        int countdown_said = 0;
 
         std::cout << "Logging to " << prefix << "_log.csv, events to " << prefix << "_events.csv\n"
-                  << "Keys: 'g' = START trial " << trial << ", 's' = stop motors (pauses the trial clock),"
-                  << " 'r' = resume, 'q' = quit\n";
+                  << "Trial " << trial << " starts " << start_delay_s << " s after the drives lock."
+                  << " Keys: 's' = stop motors (pauses the trial clock), 'r' = resume, 'q' = quit\n";
         std::cout.flush();
 
         auto next_tick = std::chrono::steady_clock::now();
@@ -300,19 +303,58 @@ int main(int argc, char* argv[]) {
             gait_node.tick();
             const auto gait_end = std::chrono::steady_clock::now();
 
-            if (start_requested.load() && !runner.started() && tick_count > 0) {
-                if (cmd_node.is_emergency_stopped()) {
-                    if (!start_refused_reported) {
-                        std::cout << "[sched] not started: emergency stop is active, press 'r' first\n";
-                        start_refused_reported = true;
+            // Every drive the schedule needs must be answering before the trial
+            // can start: a drive that is off the bus still counts as "ready"
+            // in the command node (2026-10-03, left drive powered off).
+            auto drives_not_ready = [&]() {
+                std::string msg;
+                for (const auto* node : {slip_left.get(), slip_right.get()}) {
+                    std::string why;
+                    if (node && !node->drive_reporting(&why)) {
+                        msg += (msg.empty() ? "" : "; ") + node->foot() + ": " + why;
                     }
-                    start_requested.store(false);
-                } else {
-                    runner.start(motorized_shoe::now_ns(), log_origin_ns);
+                }
+                return msg;
+            };
+            if (tick_count == static_cast<uint64_t>(3 * loop_hz)) {
+                const std::string bad = drives_not_ready();
+                if (!bad.empty()) {
+                    std::cout << "[sched] WARNING: " << bad << ". The trial starts " << start_delay_s
+                              << " s after it answers.\n";
                 }
             }
-            if (!start_requested.load()) {
-                start_refused_reported = false;
+            // Automatic start: start_delay_s after every drive the schedule
+            // uses is locked (answering, Operation Enabled, no e-stop). Losing
+            // the lock before then restarts the countdown.
+            if (!runner.started() && tick_count > 0) {
+                const std::string bad = drives_not_ready();
+                const bool estop = cmd_node.is_emergency_stopped();
+                const int64_t now = motorized_shoe::now_ns();
+                if (bad.empty() && !estop) {
+                    if (locked_since_ns == 0) {
+                        locked_since_ns = now;
+                        countdown_said = static_cast<int>(start_delay_s) + 1;
+                        std::cout << "[sched] drives locked: trial " << trial << " starts in " << start_delay_s
+                                  << " s ('s' cancels)\n";
+                        std::cout.flush();
+                    }
+                    const double left = start_delay_s - (now - locked_since_ns) / 1e9;
+                    if (left <= 0.0) {
+                        runner.start(now, log_origin_ns);
+                    } else {
+                        const int sec = static_cast<int>(std::ceil(left));
+                        if (sec < countdown_said && (sec == 10 || sec == 5 || sec <= 3)) {
+                            std::cout << "[sched] starting in " << sec << " s\n";
+                            std::cout.flush();
+                            countdown_said = sec;
+                        }
+                    }
+                } else if (locked_since_ns != 0) {
+                    std::cout << "[sched] countdown cancelled: " << (estop ? "emergency stop" : bad)
+                              << "; it restarts once the drives are locked again\n";
+                    std::cout.flush();
+                    locked_since_ns = 0;
+                }
             }
             runner.tick(motorized_shoe::now_ns(), cmd_node.is_emergency_stopped());
             drain_events();

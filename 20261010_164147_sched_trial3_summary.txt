@@ -1,0 +1,43 @@
+Schedule schedules/S01_seed31329_prot_revised.csv, trial 3: 10 slips, trial length 570.0 s (9.5 min)
+Conversion: 230653.6 counts per m (1 m/s = 230654 counts/s)
+  # wrlShoe slip schedule | planner v2 | seed 31329 | scheduler fixed | feet L R | conditions 5x HS+0 anterior 300ms Mid; 5x FF+0 anterior 300ms Low; 5x FF+0 anterior 300ms Mid; 5x FF+0 anterior 300ms High; 2x FF+225 anterior 300ms Mid; 3x FF+225 posterior 300ms Mid; 5x FF+450 posterior 300ms Low; 5x FF+450 posterior 300ms Mid; 5x FF+450 posterior 300ms High; 5x HO+0 posterior 300ms Mid; 5x FF+0 anterior 500ms Mid | magnitudes Low 0.4 / Mid 0.8 / High 1.2 m/s peak (session) | slip block 90 s | min gap 10 s | first slip by 45 s | catch blocks 2 per trial of 60 s | delay model on  stride 1.4 s | exported 2026-10-10T07:00:54.584Z
+   slip block   arm_s  foot   type        speed    counts/s  dir        delay  burst  ramp
+     21     1    30.0  Right mid (FF)    0.80 m/s    184523  anterior*    0*  300*   37 ms
+     22     1    83.0  Left  mid (FF)    1.20 m/s   -276784  posterior* 450*  300*   55 ms
+     23     2   115.0  Left  mid (FF)    0.80 m/s    184523  anterior*    0*  500*   37 ms
+     24     2   154.0  Left  early (HS)  0.80 m/s    184523  anterior*    0*  300*   37 ms
+     25     4   282.0  Right mid (FF)    1.20 m/s    276784  anterior*    0*  300*   55 ms
+     26     4   309.0  Right mid (FF)    0.40 m/s     92261  anterior*    0*  300*   18 ms
+     27     5   335.0  Right late (HO)   0.80 m/s   -184523  posterior*   0*  300*   37 ms
+     28     5   353.0  Left  mid (FF)    0.80 m/s   -184523  posterior* 225*  300*   37 ms
+     29     7   505.0  Right mid (FF)    0.80 m/s   -184523  posterior* 450*  300*   37 ms
+     30     7   559.0  Right mid (FF)    1.20 m/s   -276784  posterior* 450*  300*   55 ms
+  (* = set in the schedule file, otherwise the YAML default)
+    1 x Left FF+0 anterior 0.80 m/s 500 ms
+    1 x Left FF+225 posterior 0.80 m/s 300 ms
+    1 x Left FF+450 posterior 1.20 m/s 300 ms
+    1 x Left HS+0 anterior 0.80 m/s 300 ms
+    1 x Right FF+0 anterior 0.40 m/s 300 ms
+    1 x Right FF+0 anterior 0.80 m/s 300 ms
+    1 x Right FF+0 anterior 1.20 m/s 300 ms
+    1 x Right FF+450 posterior 0.80 m/s 300 ms
+    1 x Right FF+450 posterior 1.20 m/s 300 ms
+    1 x Right HO+0 posterior 0.80 m/s 300 ms
+
+=== Trial 3 summary: 10 slips scheduled
+         delivered: 5
+           not run: 5
+  condition                              planned delivered low-peak missed aborted other
+  Left FF+0 anterior 0.80 m/s 500 ms           1         1        0      0       0     0
+  Left FF+225 posterior 0.80 m/s 300 ms        1         0        0      0       0     1
+  Left FF+450 posterior 1.20 m/s 300 ms        1         1        0      0       0     0
+  Left HS+0 anterior 0.80 m/s 300 ms           1         1        0      0       0     0
+  Right FF+0 anterior 0.40 m/s 300 ms          1         0        0      0       0     1
+  Right FF+0 anterior 0.80 m/s 300 ms          1         1        0      0       0     0
+  Right FF+0 anterior 1.20 m/s 300 ms          1         1        0      0       0     0
+  Right FF+450 posterior 0.80 m/s 300 ms       1         0        0      0       0     1
+  Right FF+450 posterior 1.20 m/s 300 ms       1         0        0      0       0     1
+  Right HO+0 posterior 0.80 m/s 300 ms         1         0        0      0       0     1
+  onset after planned arm: median 0.78 s, max 1.30 s
+  shortest gap between fired slips: 31.52 s
+  (low-peak = delivered, but the measured motor velocity stayed under 50% of the command)

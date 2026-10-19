@@ -118,14 +118,14 @@ gait_detection:
     swing_gyro_min: 1.5
     swing_min_ms: 50
     jerk_threshold: 0.0     # was 8.0 until 2026-09-22 (see above); <= 0 disables the accel test
-    jerk_gyro_drop: 1.5     # was 0.5; fire when raw gyro_z is 1.5 rad/s below its swing peak
+    jerk_gyro_drop: 2.5     # was 1.5 # was 0.5; fire when raw gyro_z is 1.5 rad/s below its swing peak
     # Cap on the contact test: also require raw gyro_z < this (rad/s); 0 = off.
     # Without it the peak-relative drop fires on the descent from a high
     # mid-swing peak with the gyro still at 2.6-3.5 rad/s (24 % of right-foot
     # HS on the 2026-09-22 logs); 2.5 removes those (0 %) and moves the median
     # HS by only 9 ms. Not mocap-verified: check against mocap before relying
     # on the absolute timing.
-    contact_gyro_max: 2.5
+    contact_gyro_max: 1.0   # was 1.0
     jerk_holdoff_ms: 100
     flat_gyro_max: 0.5
     flat_min_ms: 100
@@ -155,10 +155,10 @@ gait_detection:
   # (p10 60) before lift-off.
   stance_events:
     enabled: true
-    ff_gyro_max: 0.3          # FF: |raw gyro_z| below this (rad/s) ...
+    ff_gyro_max: 0.2          # FF: |raw gyro_z| below this (rad/s) ...
     ff_min_ms: 50             # ... for this long
-    ho_gyro_threshold: -0.3   # HO: filtered gyro_z below this (rad/s) ...
-    ho_min_ms: 20             # ... for this long, after FF
+    ho_gyro_threshold: -0.2   # HO: filtered gyro_z below this (rad/s) ...
+    ho_min_ms: 10             # ... for this long, after FF
     ho_max_after_hs_ms: 1500  # no HO this long after the HS (standing weight shifts)
   # DEPRECATED: gravity estimation is no longer on the FSM path (the gyro-only
   # two-state machine doesn't use free acceleration). Parsed but unused.
@@ -219,12 +219,12 @@ elmo_config:
 slip_perturbation:
   enabled: true
   foot: "Right"
-  slip_velocity: 250000
-  slip_duration_ms: 500
+  slip_velocity: 200000
+  slip_duration_ms: 300
   mode1_delay_after_hs_ms: 0
   # Mid stance: delay after foot-flat (ms). 0-250 always lands in the flat
   # phase (2026-09-22/23: heel-off >= 291 ms after FF); up to ~400 in 90 %.
-  mid_stance_delay_ms: 200
+  mid_stance_delay_ms: 0
   mid_stance_slip_direction: "forward"   # "forward" = posterior (-velocity), "backward" = anterior (+velocity); anterior/posterior also accepted
   # Late stance: delay after heel-off (ms). HO leaves ~100 ms (p10 60) before
   # lift-off and the drive needs 30-45 ms to reach speed, so keep this small.
@@ -286,6 +286,9 @@ slip_schedule:
   retry_window_s: 5           # not delivered (stance ended, IMU stale, fault, e-stop): retry this long after due, then missed
   refused_retry_ms: 250       # wait after a refusal before re-arming
   max_speed_m_s: 1.5          # safety: schedule rows above this are rejected at load
+  # Trial start (2026-10-03): the trial clock starts by itself start_delay_s after every
+  # drive the schedule uses is locked (answering on CAN, Operation Enabled); no key needed.
+  start_delay_s: 15
 
 # Logging Configuration
 logging:

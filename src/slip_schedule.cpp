@@ -127,10 +127,10 @@ const char* trigger_name(SlipMode mode) {
     }
 }
 
-// "Left HS+150 anterior 0.80 m/s": the condition a slip belongs to.
+// "Left HS+150 anterior 0.80 m/s 300 ms": the condition a slip belongs to.
 std::string condition_of(const ScheduledSlip& s) {
     return s.foot + " " + trigger_name(s.mode) + "+" + std::to_string(s.delay_ms) + " " + s.direction + " " +
-           fmt(s.speed_m_s, 2) + " m/s";
+           fmt(s.speed_m_s, 2) + " m/s " + std::to_string(s.duration_ms) + " ms";
 }
 
 }  // namespace
@@ -293,7 +293,14 @@ SlipSchedule load_slip_schedule(const std::string& path, int trial, const Config
             else fail("bad trial_duration_s '" + dur + "'");
         }
 
-        s.duration_ms = cfg.slip.slip_duration_ms;
+        const std::string burst = get(f, "duration_ms");
+        if (burst.empty()) {
+            s.duration_ms = cfg.slip.slip_duration_ms;
+        } else if (parse_int(burst, s.duration_ms) && s.duration_ms >= 50 && s.duration_ms <= 2000) {
+            s.duration_from_file = true;
+        } else {
+            fail("duration_ms must be 50..2000 or blank, got '" + burst + "'");
+        }
         if (ok) {
             const double cps = s.speed_m_s * sched.counts_per_m;
             if (cps > std::numeric_limits<int32_t>::max()) {
@@ -376,12 +383,13 @@ SlipSchedule load_slip_schedule(const std::string& path, int trial, const Config
     }
 
     // Peak speed reachable within the burst at the slip profile acceleration?
-    std::map<double, int> short_ramp;
+    std::map<std::pair<double, int>, int> short_ramp;
     for (const auto& s : sched.slips) {
-        if (s.ramp_ms > s.duration_ms) ++short_ramp[s.speed_m_s];
+        if (s.ramp_ms > s.duration_ms) ++short_ramp[{s.speed_m_s, s.duration_ms}];
     }
-    for (const auto& [speed, n] : short_ramp) {
-        const int burst_ms = cfg.slip.slip_duration_ms;
+    for (const auto& [key, n] : short_ramp) {
+        const double speed = key.first;
+        const int burst_ms = key.second;
         const double reached = cfg.slip.slip_profile_acceleration * (burst_ms / 1000.0) / sched.counts_per_m;
         sched.warnings.push_back(std::to_string(n) + " slip(s) at " + fmt(speed, 2) +
                                  " m/s cannot reach peak at slip_profile_acceleration " +
@@ -402,14 +410,14 @@ void print_slip_schedule(std::ostream& os, const SlipSchedule& sched) {
            << std::setprecision(0) << sched.counts_per_m << " counts/s)\n";
     }
     for (const auto& c : sched.comments) os << "  " << c << '\n';
-    os << "   slip block   arm_s  foot   type        speed    counts/s  dir        delay  ramp\n";
+    os << "   slip block   arm_s  foot   type        speed    counts/s  dir        delay  burst  ramp\n";
     for (const auto& s : sched.slips) {
         os << std::setw(7) << s.slip << std::setw(6) << s.block << std::setw(8) << std::setprecision(1) << s.arm_s
            << "  " << std::left << std::setw(6) << s.foot << std::setw(11) << slip_mode_label(s.mode) << std::right
            << std::setw(5) << std::setprecision(2) << s.speed_m_s << " m/s" << std::setw(10) << s.velocity << "  "
            << std::left << std::setw(10) << (s.direction + (s.direction_from_file ? "*" : "")) << std::right
-           << std::setw(4) << s.delay_ms << (s.delay_from_file ? "*" : " ") << std::setw(5) << std::setprecision(0)
-           << s.ramp_ms << " ms\n";
+           << std::setw(4) << s.delay_ms << (s.delay_from_file ? "*" : " ") << std::setw(5) << s.duration_ms
+           << (s.duration_from_file ? "*" : " ") << std::setw(5) << std::setprecision(0) << s.ramp_ms << " ms\n";
     }
     os << "  (* = set in the schedule file, otherwise the YAML default)\n";
     std::map<std::string, int> counts;
@@ -589,9 +597,18 @@ void SlipScheduleRunner::handle_outcome(const SlipOutcome& o) {
             write(t, o.time_ns, &s, r.attempts, kind, fmt(t - s.arm_s, 3) + " s after the planned arm");
             say(t, describe(s) + ": FIRED");
             break;
-        case K::Completed:
-            finish_current(Status::Delivered, t, "delivered", "");
+        case K::Completed: {
+            // The measured peak shows whether the wheel really moved (a drive
+            // that stopped answering, or a wheel stalled under load, does not).
+            r.peak_measured = o.peak_measured;
+            const double ratio = s.velocity != 0 ? o.peak_measured / std::fabs(static_cast<double>(s.velocity)) : 0.0;
+            std::string detail = "measured peak " + std::to_string(o.peak_measured) + " counts/s";
+            if (schedule_.counts_per_m > 0) detail += " (" + fmt(o.peak_measured / schedule_.counts_per_m, 2) + " m/s)";
+            detail += ", " + fmt(100.0 * ratio, 0) + "% of commanded";
+            if (ratio < 0.5) detail += "; LOW PEAK: check the drive / wheel";
+            finish_current(Status::Delivered, t, "delivered", detail);
             break;
+        }
         case K::Refused:
         case K::Cancelled:
         case K::Disarmed:
@@ -718,7 +735,14 @@ void SlipScheduleRunner::tick(int64_t now_ns, bool paused) {
 }
 
 void SlipScheduleRunner::stop(int64_t now_ns, const std::string& reason) {
-    if (!started_ || finished_) {
+    if (finished_) return;
+    if (!started_) {
+        for (auto& r : records_) {
+            if (!is_final(r.status)) {
+                r.status = Status::NotRun;
+                r.last_reason = reason;
+            }
+        }
         finished_ = true;
         return;
     }
@@ -728,7 +752,7 @@ void SlipScheduleRunner::stop(int64_t now_ns, const std::string& reason) {
 
 void SlipScheduleRunner::print_summary(std::ostream& os) const {
     std::map<Status, int> by_status;
-    struct Combo { int planned = 0, delivered = 0, missed = 0, aborted = 0, other = 0; };
+    struct Combo { int planned = 0, delivered = 0, low_peak = 0, missed = 0, aborted = 0, other = 0; };
     std::map<std::string, Combo> combos;
     std::vector<double> late;
     double prev_onset = -1.0;
@@ -739,7 +763,10 @@ void SlipScheduleRunner::print_summary(std::ostream& os) const {
         by_status[r.status]++;
         Combo& c = combos[condition_of(s)];
         c.planned++;
-        if (r.status == Status::Delivered) c.delivered++;
+        if (r.status == Status::Delivered) {
+            c.delivered++;
+            if (s.velocity != 0 && r.peak_measured < 0.5 * std::fabs(static_cast<double>(s.velocity))) c.low_peak++;
+        }
         else if (r.status == Status::Missed) c.missed++;
         else if (r.status == Status::Aborted) c.aborted++;
         else c.other++;
@@ -751,10 +778,10 @@ void SlipScheduleRunner::print_summary(std::ostream& os) const {
     }
     os << "\n=== Trial " << schedule_.trial << " summary: " << records_.size() << " slips scheduled\n";
     for (const auto& [st, n] : by_status) os << "  " << std::setw(16) << status_name(st) << ": " << n << '\n';
-    os << "  condition                              planned delivered missed aborted other\n";
+    os << "  condition                              planned delivered low-peak missed aborted other\n";
     for (const auto& [k, c] : combos) {
         os << "  " << std::left << std::setw(38) << k << std::right << std::setw(8) << c.planned << std::setw(10)
-           << c.delivered << std::setw(7) << c.missed << std::setw(8) << c.aborted << std::setw(6) << c.other << '\n';
+           << c.delivered << std::setw(9) << c.low_peak << std::setw(7) << c.missed << std::setw(8) << c.aborted << std::setw(6) << c.other << '\n';
     }
     if (!late.empty()) {
         std::sort(late.begin(), late.end());
@@ -762,6 +789,7 @@ void SlipScheduleRunner::print_summary(std::ostream& os) const {
            << fmt(late.back(), 2) << " s\n";
     }
     if (std::isfinite(min_gap)) os << "  shortest gap between fired slips: " << fmt(min_gap, 2) << " s\n";
+    os << "  (low-peak = delivered, but the measured motor velocity stayed under 50% of the command)\n";
     os.flush();
 }
 

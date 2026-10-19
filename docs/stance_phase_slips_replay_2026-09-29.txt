@@ -1,5 +1,5 @@
 # Stance sub-phase events (FF foot-flat, HO heel-off) and stance-phase slip triggers -- replay 2026-09-29
-# build/gait_fsm_replay config/motorized_shoe_params.yaml <logs> ; contact mode, C1+C2 on, to_inflection_detection false (as committed).
+# build/gait_fsm_replay config/motorized_shoe_params.yaml <logs> ; contact mode, C1+C2 on; first part to_inflection_detection false, last part true.
 # Heel-off ref = last raw gyro_z > -0.1 before the push-off (IMU-only); lift-off = TO event stamp (C2-corrected, mocap-unbiased).
 # Slip emulation: fire = event + delay; a mid/late-stance slip is cancelled if the stance ends (TO/HS/RESET declared) first.
 
@@ -68,3 +68,21 @@ late stance, fire = HO + delay (lift-off - fire, ms; drive needs 30-45 ms to rea
   delay 60 ms: n= 851 median   +40 p10   +10 p90   +80 min   -10 max +1681 | cancelled 120 of 971
 
 === all 45 logs
+stances: {'stance ended without TO': 230, 'HO in a stance without TO': 114, 'strides': 3005, 'slip strides (skipped)': 186, 'no HO': 28, 'no FF': 11}
+  HS -> FF                   n=2994 median  +260 p10  +189 p90  +321 min   +47 max  +639
+  FF -> heel-off ref         n=2994 median  +531 p10  +430 p90  +709 min   +11 max +2157
+  HO detect - heel-off ref   n=2977 median   +40 p10   +30 p90   +50 min -1958 max  +180
+  HO -> lift-off (TO stamp)  n=2977 median  +100 p10   +60 p90  +160 min   -21 max +2038
+  HO -> TO declared          n=2977 median  +100 p10   +60 p90  +169 min   +39 max +2038
+mid stance, fire = FF + delay:
+  delay   0 ms: inside flat phase 2994 (100.0%)
+  delay 100 ms: inside flat phase 2986 (99.7%), after heel-off 8 (0.3%)
+  delay 200 ms: inside flat phase 2984 (99.7%), cancelled (TO first) 4 (0.1%), after heel-off 6 (0.2%)
+  delay 250 ms: inside flat phase 2978 (99.5%), after heel-off 9 (0.3%), cancelled (TO first) 7 (0.2%)
+  delay 300 ms: inside flat phase 2970 (99.2%), after heel-off 17 (0.6%), cancelled (TO first) 7 (0.2%)
+  delay 400 ms: inside flat phase 2826 (94.4%), after heel-off 160 (5.3%), cancelled (TO first) 8 (0.3%)
+late stance, fire = HO + delay (lift-off - fire, ms; drive needs 30-45 ms to reach speed):
+  delay  0 ms: n=2977 median  +100 p10   +60 p90  +160 min   -21 max +2038 | cancelled 0 of 2977
+  delay 20 ms: n=2977 median   +80 p10   +40 p90  +140 min   -41 max +2018 | cancelled 0 of 2977
+  delay 40 ms: n=2937 median   +60 p10   +20 p90  +120 min   -61 max +1998 | cancelled 40 of 2977
+  delay 60 ms: n=2672 median   +41 p10   +10 p90  +100 min   -81 max +1978 | cancelled 305 of 2977

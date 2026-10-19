@@ -65,6 +65,11 @@ struct SlipConfig {
     // Copied from Config::imu_stale_ms at load time so the slip node can
     // refuse to arm on a dead slip-foot IMU.
     int imu_stale_ms = 100;
+    // Set at load time to max(1500, 3 x elmo status_poll_ms): a drive whose
+    // last statusword reply is older than this is treated as not responding.
+    // (The command node marks a drive ready after init even when the drive
+    // never answered -- 2026-10-03, left drive off the bus.)
+    int drive_status_max_age_ms = 1500;
 };
 
 // Schedule-driven slips (motorized_shoe_schedule_app, slip_schedule: in the
@@ -91,6 +96,11 @@ struct SlipScheduleConfig {
     int refused_retry_ms = 250;
     // Safety: a schedule row faster than this is rejected at load.
     float max_speed_m_s = 1.5f;
+
+    // Trial start: the trial clock starts on its own start_delay_s after every
+    // drive the schedule uses is locked (answering on CAN, Operation Enabled).
+    // A drive dropping out (or an e-stop) before then restarts the countdown.
+    float start_delay_s = 15.0f;
 
     // 0 = not configured (the app refuses to run a schedule).
     double counts_per_m() const;

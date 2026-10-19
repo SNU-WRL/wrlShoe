@@ -308,6 +308,7 @@ Config load_config(const std::string& path) {
     }
 
     cfg.slip.imu_stale_ms = cfg.imu_stale_ms;
+    cfg.slip.drive_status_max_age_ms = std::max(1500, 3 * cfg.status_poll_ms);
     cfg.slip.stance_events_available = cfg.gait_hs_contact_detection && cfg.gait_stance_events;
 
     apply_float(kv, "slip_schedule.encoder_counts_per_rev", cfg.slip_schedule.encoder_counts_per_rev);
@@ -318,6 +319,7 @@ Config load_config(const std::string& path) {
     apply_float(kv, "slip_schedule.retry_window_s", cfg.slip_schedule.retry_window_s);
     apply_int(kv, "slip_schedule.refused_retry_ms", cfg.slip_schedule.refused_retry_ms);
     apply_float(kv, "slip_schedule.max_speed_m_s", cfg.slip_schedule.max_speed_m_s);
+    apply_float(kv, "slip_schedule.start_delay_s", cfg.slip_schedule.start_delay_s);
 
     apply_bool(kv, "logging.imu_data_log", cfg.log_imu);
     apply_bool(kv, "logging.gait_phase_log", cfg.log_gait);

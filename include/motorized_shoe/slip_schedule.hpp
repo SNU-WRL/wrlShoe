@@ -23,8 +23,9 @@ namespace motorized_shoe {
 //   unit (must contain "m/s"), and optionally magnitude (label; its trailing
 //   number is used if value is blank), block, direction (anterior = +velocity,
 //   posterior = -velocity; the YAML's older backward / forward are accepted
-//   as the same), delay_ms (after the trigger event) and trial_duration_s.
-// Blank direction / delay_ms = the YAML default for that slip type.
+//   as the same), delay_ms (after the trigger event), duration_ms (burst
+//   length) and trial_duration_s.
+// Blank direction / delay_ms / duration_ms = the YAML default for that slip type.
 
 using SlipMode = SlipPerturbationNode::Mode;
 using SlipRequest = SlipPerturbationNode::Request;
@@ -45,6 +46,7 @@ struct ScheduledSlip {
     int delay_ms = 0;
     bool delay_from_file = false;
     int duration_ms = 0;
+    bool duration_from_file = false;
     int32_t velocity = 0;    // signed counts/s actually commanded
     double ramp_ms = 0.0;    // time to reach |velocity| at the slip profile acceleration
 };
@@ -134,6 +136,7 @@ private:
         double due_s = -1.0;
         double next_attempt_s = 0.0;
         double onset_s = -1.0;
+        int32_t peak_measured = -1;   // max |measured motor velocity| in the burst, -1 = none
         std::string last_reason;
     };
 
