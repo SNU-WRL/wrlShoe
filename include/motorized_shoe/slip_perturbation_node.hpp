@@ -71,7 +71,7 @@ public:
             Armed,      // waiting for the trigger event
             Triggered,  // trigger event seen; event_ns = its timestamp
             Started,    // velocity commanded
-            Completed,  // burst over, velocity 0 commanded
+            Completed,  // burst over, velocity 0 commanded; peak_measured = max |motor velocity| seen
             Refused,    // never armed (busy, IMU stale, drive unavailable, e-stop, no FF/HO)
             Cancelled,  // stance ended before the fire time, or cancel()
             Disarmed,   // slip-foot IMU went stale while armed
@@ -82,6 +82,7 @@ public:
         int64_t time_ns = 0;     // steady clock, same base as the log
         int64_t event_ns = 0;    // Triggered: gait event timestamp
         bool during_slip = false;  // Aborted: the burst had already started
+        int32_t peak_measured = 0;   // Completed: max |measured motor velocity| (counts/s) during the burst
         std::string detail;
     };
 
@@ -98,6 +99,10 @@ public:
     std::vector<Outcome> take_outcomes();
 
     bool is_active() const;
+    // The drive is answering on CAN and is in Operation Enabled: its last
+    // statusword reply is fresh (drive_status_max_age_ms). Slips refuse to arm
+    // otherwise.
+    bool drive_reporting(std::string* why = nullptr) const;
     State state() const { return state_; }
     Mode current_mode() const { return current_.mode; }
     const std::string& foot() const { return cfg_.foot; }
@@ -137,6 +142,7 @@ private:
     void report(Outcome::Kind kind, const std::string& detail = "", int64_t event_ns = 0,
                 bool during_slip = false, int id = -1);
     void go_idle();
+    bool drive_reporting(const SystemSnapshot& s, std::string* why) const;
 
     const SlipConfig cfg_;
     DataBus& bus_;
@@ -147,6 +153,7 @@ private:
     State state_ = State::Idle;
     Request current_;
     std::vector<Outcome> outcomes_;
+    int32_t peak_measured_ = 0;   // max |motor velocity| during the current burst
     std::chrono::steady_clock::time_point timer_deadline_{};
     uint32_t last_seen_detection_count_ = 0;
     bool detection_count_initialized_ = false;

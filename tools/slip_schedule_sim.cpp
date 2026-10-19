@@ -107,6 +107,7 @@ public:
         }
         if (state_ == Slipping && now >= end_at_) {
             push(cur_.id, SlipOutcome::Kind::Completed, "");
+            out_.back().peak_measured = cur_.velocity < 0 ? -cur_.velocity : cur_.velocity;
             state_ = Idle;
         }
     }

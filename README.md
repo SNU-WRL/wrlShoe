@@ -173,8 +173,13 @@ ERROR-ACTIVE and RX/TX packets must count up.
   `direction` / `delay_ms` take the YAML defaults. Direction: anterior =
   +velocity, posterior = -velocity. The planner's **Condition list** design
   (preset "wrlShoe timing study") gives each condition its own trigger + delay,
-  direction and magnitude, e.g. `5 FF+450 posterior Mid`, and splits every
-  condition between two feet with equal totals per foot. Set the m/s -> counts/s
+  direction, magnitude and optional burst length, e.g. `5 FF+450 posterior Mid`
+  or `5 FF+0 anterior Mid 500ms` (exported as `duration_ms`; blank = YAML
+  `slip_duration_ms`), and splits every condition between two feet with equal
+  totals per foot. Catch blocks can be a fixed number per trial with their own
+  length (preset "wrlShoe protocol 2026-10-16": 55 slips, 5 trials x 11, 90 s slip
+  blocks, 2 x 60 s catch). An odd number of slips in a trial puts one slip alone
+  in a randomly chosen slip block. Set the m/s -> counts/s
   geometry in `slip_schedule:` first. Check a schedule without hardware, then run:
 
   ```bash
@@ -182,7 +187,9 @@ ERROR-ACTIVE and RX/TX packets must count up.
   sudo ./build/motorized_shoe_schedule_app --schedule slip_schedule_seed2026_fixed.csv --trial 1
   ```
 
-  Keys: `g` starts the trial clock, `s` stops the motors and pauses the clock,
+  The trial clock starts by itself 15 s (`slip_schedule.start_delay_s`) after
+  every drive the schedule uses is locked; a drive dropping out or `s` before
+  then restarts the countdown. Keys: `s` stops the motors and pauses the clock,
   `r` resumes, `q` quits. The minimum gap is enforced between slips that actually
   fired; a slip that cannot be delivered is retried for `retry_window_s`, then
   recorded as missed; a burst cut short by a fault or e-stop is recorded as

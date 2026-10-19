@@ -151,6 +151,27 @@ bool SlipPerturbationNode::is_active() const {
     return state_ != State::Idle;
 }
 
+bool SlipPerturbationNode::drive_reporting(std::string* why) const {
+    return drive_reporting(bus_.snapshot(), why);
+}
+
+bool SlipPerturbationNode::drive_reporting(const SystemSnapshot& s, std::string* why) const {
+    const ElmoStatus& st = (cfg_.foot == "Left") ? s.status_left : s.status_right;
+    std::string w;
+    if (!st.valid) {
+        w = "drive not responding on CAN (no statusword ever received: check its power and CAN cable)";
+    } else if (s.timestamp_ns - st.timestamp_ns > static_cast<int64_t>(cfg_.drive_status_max_age_ms) * 1000000) {
+        w = "drive stopped responding on CAN (last statusword " +
+            std::to_string((s.timestamp_ns - st.timestamp_ns) / 1000000) + " ms ago)";
+    } else if (!st.operation_enabled) {
+        w = "drive not in Operation Enabled";
+    }
+    if (why != nullptr) {
+        *why = w;
+    }
+    return w.empty();
+}
+
 void SlipPerturbationNode::tick() {
     if (!cfg_.enabled) {
         return;
@@ -205,6 +226,9 @@ void SlipPerturbationNode::tick() {
         } else if (!cmd_node_.is_drive_available(cfg_.foot, &why)) {
             std::cerr << "[slip] REFUSED to arm " << name << ": " << cfg_.foot << " " << why << '\n';
             refuse("drive " + why);
+        } else if (!drive_reporting(s, &why)) {
+            std::cerr << "[slip] REFUSED to arm " << name << ": " << cfg_.foot << " " << why << '\n';
+            refuse(why);
         } else if (mode != Mode::AfterHS && !cfg_.stance_events_available) {
             std::cerr << "[slip] REFUSED to arm " << name << ": the gait FSM emits no FF/HO events"
                       << " (needs gait_detection.hs_contact_detection and"
@@ -252,6 +276,22 @@ void SlipPerturbationNode::tick() {
         go_idle();
         return;
     }
+    // Same for the drive: a slip must not be "delivered" to a drive that
+    // stopped answering.
+    std::string drive_why;
+    if ((state_ == State::Armed || state_ == State::DelayingBeforeSlip) && !drive_reporting(s, &drive_why)) {
+        std::cerr << "[slip] DISARMED: " << cfg_.foot << " " << drive_why << '\n';
+        report(Outcome::Kind::Disarmed, drive_why);
+        go_idle();
+        return;
+    }
+    if (state_ == State::Slipping) {
+        const ElmoMotorInfo& m = (cfg_.foot == "Left") ? s.motor_left : s.motor_right;
+        if (m.velocity_valid) {
+            const int32_t v = m.velocity < 0 ? -m.velocity : m.velocity;
+            if (v > peak_measured_) peak_measured_ = v;
+        }
+    }
 
     // Keep the (diagnostic) stance estimate fresh every tick.
     update_stance_estimator();
@@ -294,6 +334,7 @@ void SlipPerturbationNode::tick() {
     // deadline already in the past) fires immediately instead of costing
     // one extra slip tick per transition.
     if (state_ == State::DelayingBeforeSlip && now >= timer_deadline_) {
+        peak_measured_ = 0;
         start_slip_now();
         timer_deadline_ = now + std::chrono::milliseconds(current_.duration_ms);
         state_ = State::Slipping;
@@ -302,6 +343,9 @@ void SlipPerturbationNode::tick() {
     if (state_ == State::Slipping && now >= timer_deadline_) {
         end_slip_now();
         report(Outcome::Kind::Completed);
+        if (!outcomes_.empty() && outcomes_.back().kind == Outcome::Kind::Completed) {
+            outcomes_.back().peak_measured = peak_measured_;
+        }
         go_idle();
     }
 }
